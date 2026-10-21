@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101211">
+  <title>Negative Lab | Film Scanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="app-shell">
+    <header class="topbar flex items-center justify-between gap-4 px-5 md:px-8">
+      <div class="flex items-center gap-3">
+        <div class="brand-mark" aria-hidden="true">NL</div>
+        <div class="brand-title">
+          <div class="display-type text-sm font-bold tracking-wide">NEGATIVE LAB</div>
+          <div class="eyebrow mt-1">Client-side film scanner</div>
+        </div>
+      </div>
+      <nav class="flex items-center gap-1" aria-label="Scanner modes">
+        <button class="mode-tab active" data-mode="setup">01 Setup</button>
+        <button class="mode-tab" data-mode="capture">02 Capture</button>
+        <button class="mode-tab" data-mode="review">03 Review</button>
+        <button class="mode-tab" data-mode="process">04 Process</button>
+        <button class="mode-tab" data-mode="export">05 Export</button>
+      </nav>
+      <div class="flex items-center gap-2">
+        <div class="hidden sm:block text-right mr-2">
+          <div class="eyebrow">Active roll</div>
+          <div class="text-xs font-bold">#<span id="headerRoll">1</span> <span class="subtle">/ Shot</span> <span
+              id="headerShot">1</span></div>
+        </div>
+        <button id="doneButton" class="primary-button">Continue to Capture →</button>
+      </div>
+    </header>
+
+    <div class="capture-layout">
+      <aside class="sidebar">
+        <div class="sidebar-inner p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <div class="eyebrow">Current roll</div>
+              <label class="roll-name-label"><input id="rollNumberInput" class="roll-number-input" type="number" min="1"
+                  max="9999" step="1" aria-label="Current roll number" value="1"><input id="rollNameInput"
+                  class="roll-name-input display-type" type="text" maxlength="80" aria-label="Current roll name"
+                  value="Roll 01"></label>
+            </div>
+            <span id="shotCount" class="badge" aria-label="Captured shot count">0</span>
+          </div>
+          <div id="rollList" class="film-list mb-5" aria-label="Rolls"></div>
+          <button id="nextRollButton" class="secondary-button mb-5 w-full">＋ New roll</button>
+          <div class="eyebrow mb-3">Frames in this roll</div>
+          <div id="filmList" class="film-list" aria-live="polite"></div>
+          <div id="emptyFilmList" class="border-t border-[var(--line)] py-5 text-xs subtle">Your captured frames will
+            appear here.</div>
+        </div>
+      </aside>
+
+      <main class="main-pane">
+        <section id="setupView" class="view active" aria-labelledby="setupTitle">
+          <div class="mb-5">
+            <div class="eyebrow">Step 01 · Setup</div>
+            <h1 id="setupTitle" class="display-type mt-1 text-2xl font-bold">Set up your camera.</h1>
+            <p class="mt-2 text-xs subtle">Choose your camera and resolution, then place the negative in frame and continue.</p>
+          </div>
+          <div class="preview-shell" id="previewShell">
+            <video id="cameraVideo" autoplay playsinline muted></video><canvas id="motionCanvas"
+              aria-hidden="true"></canvas>
+            <div class="preview-corner tl"></div>
+            <div class="preview-corner tr"></div>
+            <div class="preview-corner bl"></div>
+            <div class="preview-corner br"></div>
+            <div class="live-pill"><span class="live-dot"></span><span id="liveLabel">Camera offline</span></div>
+            <div id="scanFlash" class="scan-flash"></div>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <div id="captureStatus" class="status-line" role="status">Allow camera access to begin.</div>
+            <div class="flex gap-2"><span id="cvStatus" class="cv-chip">OpenCV loading</span><button
+                id="startCameraButton" class="primary-button">Start camera</button></div>
+          </div>
+          <div class="panel mt-5 grid gap-5 p-4 md:grid-cols-[1fr_1fr]">
+            <div>
+              <div class="eyebrow mb-3">Camera setup</div>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label><span class="field-label">Video source</span><select id="cameraSelect" class="field-select">
+                    <option value="">Default camera</option>
+                  </select></label>
+                <label><span class="field-label">Resolution mode</span><select id="resolutionSelect"
+                    class="field-select">
+                    <option value="device" selected>Use device settings</option>
+                    <option value="3840x2160">3840 × 2160 · max</option>
+                    <option value="1920x1080">1920 × 1080</option>
+                    <option value="1280x720">1280 × 720</option>
+                  </select></label>
+              </div>
+              <div class="mt-3 text-[10px] subtle">Stream: <span id="resolutionReadout">No stream</span></div>
+            </div>
+            <div>
+              <div class="eyebrow mb-3">Negative setup</div>
+              <div class="space-y-3 text-xs subtle">
+                <p class="m-0">Place the negative in the frame and continue to capture the roll. No light-source or film-base reference step is required.</p>
+              </div>
+              <div class="mt-4">
+                <label class="field-label flex items-center gap-2"><input id="zlog2Toggle" type="checkbox"> Decode Z-Log2 input</label>
+                <p class="mt-2 text-[10px] subtle">Linearizes Z CAM Z-Log2 footage before all processing steps. Capture and review previews are not affected.</p>
+              </div>
+              <div class="mt-4">
+                <label for="burstFrameCount" class="field-label">Frames per burst</label>
+                <div class="burst-count-control">
+                  <button id="decreaseBurstFrameCount" class="burst-count-button" type="button"
+                    aria-label="Decrease frames per burst" aria-controls="burstFrameCount">−</button>
+                  <input id="burstFrameCount" class="field-input burst-count-input" type="number" min="1" max="16"
+                    step="1" value="1" inputmode="numeric" aria-describedby="burstFrameHelp">
+                  <button id="increaseBurstFrameCount" class="burst-count-button" type="button"
+                    aria-label="Increase frames per burst" aria-controls="burstFrameCount">+</button>
+                </div>
+                <p id="burstFrameHelp" class="mt-2 text-[10px] subtle">Choose 1–16 frames for each shot. One frame is the default.</p>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5 flex justify-end"><button class="primary-button" data-mode="capture">Continue to capture
+              →</button></div>
+        </section>
+
+        <section id="captureView" class="view" aria-labelledby="captureTitle">
+          <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
+            <div>
+              <div class="eyebrow">Step 02 · Roll <span id="captureRoll">01</span></div>
+              <h1 id="captureTitle" class="display-type mt-1 text-2xl font-bold">Capture a burst of 1 frame.</h1>
+            </div>
+            <button id="autoCaptureToggle" class="secondary-button capture-toggle" type="button" aria-pressed="false"
+              aria-label="Enable automatic capture"
+              title="Optional automatic capture when a stable frame is detected"><span class="capture-indicator"
+                aria-hidden="true"></span><span id="autoCaptureLabel">Auto capture off</span></button>
+          </div>
+          <div class="preview-shell" id="capturePreviewShell"><canvas id="capturePreviewCanvas"
+              aria-label="Live camera preview"></canvas>
+            <div class="live-pill"><span class="live-dot"></span><span>Live · position the negative</span></div>
+          </div>
+          <div class="panel mt-3 p-4">
+            <label class="toggle-row cursor-pointer">
+              <span>
+                <span class="block text-sm font-bold">Color correct</span>
+                <span class="mt-1 block text-xs subtle">Invert the live preview and apply the curves and controls. Display only; captured frames are unchanged.</span>
+              </span>
+              <input id="captureNegativeToggle" class="switch" type="checkbox" aria-label="Enable color correction preview">
+            </label>
+            <div id="captureCorrectionBody" class="hidden">
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-2">
+              <div class="eyebrow">Live preview adjustments · display only</div>
+              <div class="flex gap-2">
+                <button class="secondary-button" type="button" data-profile-action="save" data-profile-scope="live">Save profile</button>
+                <button class="secondary-button" type="button" data-profile-action="load" data-profile-scope="live">Load profile</button>
+              </div>
+            </div>
+            <label class="block py-3 text-xs">Preview mode<select id="capturePreviewMode" class="field-select mt-2"
+                aria-label="Choose color or black and white live preview">
+                <option value="color" selected>Color</option>
+                <option value="bw">Black &amp; white</option>
+              </select></label>
+            <div id="captureCurves" class="adjustment-controls"></div>
+            <div class="eyebrow mt-4">Brightness and contrast</div>
+            <div class="grid gap-x-5 sm:grid-cols-2">
+            <label class="block py-3 text-xs">Brightness <span id="captureBrightnessLabel" class="badge ml-2">0</span>
+              <input id="captureBrightness" class="mt-2 w-full" type="range" min="-100" max="100" value="0">
+            </label>
+            <label class="block py-3 text-xs">Contrast <span id="captureContrastLabel" class="badge ml-2">100%</span>
+              <input id="captureContrast" class="mt-2 w-full" type="range" min="0" max="200" value="100">
+            </label>
+            </div>
+            </div>
+          </div>
+          <div class="panel p-4">
+            <div class="eyebrow">Burst capture</div>
+            <p id="captureBurstDescription" class="mt-2 text-xs subtle">Press <kbd>Space</kbd> or click the button to capture 1 exposure. Each
+              frame gets its own corner detection to account for movement and improve alignment.</p>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <div id="captureStatusCapture" class="status-line" role="status">Start the camera in Setup, then capture a
+              burst.</div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button id="importRawDataButton" class="secondary-button" type="button">Import raw data</button>
+              <button id="captureNowButton" class="primary-button" disabled><span id="captureBurstButtonLabel">Capture burst · 1 frame</span>
+                <kbd>Space</kbd></button>
+            </div>
+          </div>
+          <div class="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4"><button
+              class="secondary-button" data-mode="setup">← Setup</button><button class="primary-button"
+              data-mode="review">Review this roll →</button></div>
+        </section>
+
+        <section id="reviewView" class="view" aria-labelledby="reviewTitle">
+          <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
+            <div>
+              <div class="eyebrow">Roll <span id="reviewRoll">01</span> · Shot <span id="reviewShot">—</span></div>
+              <h1 id="reviewTitle" class="display-type mt-1 text-2xl font-bold">Fine-tune the frame.</h1>
+            </div>
+            <div class="flex items-center gap-2"><button id="previousShotButton" class="secondary-button"
+                aria-label="Previous shot">← Previous</button><button id="nextShotButton" class="secondary-button"
+                aria-label="Next shot">Next →</button></div>
+          </div>
+          <div id="reviewEmpty" class="panel empty-state">
+            <div>
+              <div class="display-type text-xl text-[var(--ink)]">No shots in this roll yet</div>
+              <p class="mt-2 text-xs">Return to Capture and make a burst to review its crop.</p><button
+                class="secondary-button mt-4" data-mode="capture">Back to capture</button>
+            </div>
+          </div>
+          <div id="reviewContent" class="hidden">
+            <label class="field-label mb-3 flex items-center gap-2"><input id="reviewNegativeToggle" type="checkbox">
+              Color correct <span class="subtle normal-case tracking-normal">· display only, does not alter exports</span></label>
+            <div class="review-adjustment-modes mb-3" role="group" aria-label="Crop adjustment mode">
+              <button id="cornerAdjustMode" class="mode-tab active" type="button" aria-pressed="true">Four corners</button>
+              <button id="filmAdjustMode" class="mode-tab" type="button" aria-pressed="false">Film edges · 3:2</button>
+            </div>
+            <div class="review-stage" id="reviewStage"><canvas id="reviewCanvas"
+                aria-label="Shot preview with adjustable crop and film-edge guides"></canvas></div>
+            <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <div id="reviewHint" class="status-line">Drag each corner to crop. If the film was fed from the opposite side, adjust its output orientation here.
+              </div>
+                <div class="flex flex-wrap items-center gap-2"><label class="field-label flex items-center gap-2"><input id="flipXToggle" type="checkbox"> Flip horizontal</label><label class="field-label flex items-center gap-2"><input id="flipYToggle" type="checkbox"> Flip vertical</label><button id="autoCropButton" class="secondary-button">Reset auto
+                  frame</button><button id="removeShotButton" class="danger-button">Remove failed / duplicate</button>
+              </div>
+            </div>
+            <div id="reviewCorrectionBody" class="panel mt-3 p-4 hidden">
+              <div class="flex justify-end gap-2">
+                <button class="secondary-button" type="button" data-profile-action="save" data-profile-scope="live">Save profile</button>
+                <button class="secondary-button" type="button" data-profile-action="load" data-profile-scope="live">Load profile</button>
+              </div>
+              <label class="block py-3 text-xs">Preview mode<select id="reviewPreviewMode" class="field-select mt-2"
+                  aria-label="Choose color or black and white review preview">
+                  <option value="color" selected>Color</option>
+                  <option value="bw">Black &amp; white</option>
+                </select></label>
+              <div id="reviewCurves" class="adjustment-controls"></div>
+              <div class="grid gap-x-5 sm:grid-cols-2">
+                <label class="block py-3 text-xs">Brightness <span id="reviewBrightnessLabel" class="badge ml-2">0</span>
+                  <input id="reviewBrightness" class="mt-2 w-full" type="range" min="-100" max="100" value="0">
+                </label>
+                <label class="block py-3 text-xs">Contrast <span id="reviewContrastLabel" class="badge ml-2">100%</span>
+                  <input id="reviewContrast" class="mt-2 w-full" type="range" min="0" max="200" value="100">
+                </label>
+              </div>
+            </div>
+            <div class="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4"><button
+                id="reviewBackButton" class="secondary-button">← Capture</button><button id="toProcessButton"
+                class="primary-button">Process this roll →</button></div>
+          </div>
+        </section>
+
+        <section id="processView" class="view" aria-labelledby="processTitle">
+          <div class="mb-6">
+            <div class="eyebrow">Develop & deliver</div>
+            <h1 id="processTitle" class="display-type mt-1 text-2xl font-bold">Make the negative positive.</h1>
+            <p id="processSummary" class="mt-2 text-xs subtle">Configure the roll-wide image pipeline. Processing
+              happens entirely in this browser.</p>
+          </div>
+          <div class="panel p-5 md:p-7">
+            <div class="eyebrow">Preview one shot · choose its adjustments or apply roll-wide settings</div>
+            <div class="panel mt-3 p-2"><canvas id="processPreview" class="block w-full"
+                aria-label="Live processed image preview"></canvas></div>
+            <div class="process-adjustment-workspace mt-4">
+              <div class="process-adjustment-toolbar">
+                <label class="block py-3 text-xs">Processing mode<select id="processMode" class="field-select mt-2"
+                    aria-label="Choose color or black and white processing">
+                    <option value="color">Color</option>
+                    <option value="bw">Black &amp; white</option>
+                  </select></label>
+                <div id="adjustmentScopeTitle" class="eyebrow">Roll-wide image adjustments</div>
+                <div class="flex gap-2">
+                  <button class="secondary-button" type="button" data-profile-action="save" data-profile-scope="process">Save profile</button>
+                  <button class="secondary-button" type="button" data-profile-action="load" data-profile-scope="process">Load profile</button>
+                </div>
+              </div>
+              <div id="processAdjustments" class="adjustment-controls"></div>
+              <div class="toggle-row process-scope-toggle">
+                <div>
+                  <div class="text-sm font-bold">Shot-specific image adjustment</div>
+                  <div class="mt-1 text-xs subtle">Use the same controls for this shot only. Enabling copies the current roll-wide settings to this shot.</div>
+                </div><input id="previewAdjustmentsToggle" class="switch" type="checkbox"
+                  aria-label="Use shot-specific image adjustments">
+              </div>
+              <p class="mt-2 text-[10px] subtle">Processing order: invert the camera sRGB values (if enabled), decode to linear light, normalize each RGB channel to its roll min/max (editable above), apply brightness, contrast (pivoting at the middle of that range) and tint, apply the RGB curves over the min–max range, then apply the Master (W) curve to luminance only while preserving color. B&amp;W desaturates after those corrections. RGB curves are flat by default. Double-click a curve to add a point; Ctrl+click a point to remove it; drag points to reshape the curve. RGB histograms show the actual input to each RGB curve; the Master (W) histogram shows luminance after RGB curves.</p>
+            </div>
+            <div class="process-engine-settings mt-5">
+                <div class="eyebrow">Image engine</div>
+                <div class="toggle-row">
+                  <div>
+                    <div class="text-sm font-bold">Invert negative</div>
+                    <div class="mt-1 text-xs subtle">Reverse RGB channels to produce a positive image.</div>
+                  </div><input id="invertToggle" class="switch" type="checkbox" checked aria-label="Invert negative">
+                </div>
+                <label class="block py-3 text-xs">Output gamma
+                  <select id="gammaSelect" class="field-select mt-2" aria-label="Select output gamma">
+                    <option value="srgb">sRGB</option>
+                    <option value="2.2">2.2</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <div class="toggle-row">
+                  <div>
+                    <div class="text-sm font-bold">Stitch burst frames on export</div>
+                    <div class="mt-1 text-xs subtle">Register and average burst frames during export to reduce noise.
+                      The preview always processes only the first frame.</div>
+                  </div><input id="averageToggle" class="switch" type="checkbox" checked
+                    aria-label="Align and average burst frames">
+                </div>
+                <div class="py-4">
+                  <div class="flex items-center justify-between"><label for="averageCount"
+                      class="text-sm font-bold">Frames stitched on export</label><span id="averageCountLabel" class="badge">16 /
+                      16</span></div>
+                  <input id="averageCount" class="mt-3 w-full" type="range" min="1" max="16" value="16"
+                    aria-label="Number of frames to average">
+                </div>
+                <div class="mt-3 border-t border-[var(--line)] pt-4 text-xs subtle">
+                  <p class="mt-2">More frames improve noise and motion averaging. Export aligns the selected individual frame crops before averaging.</p>
+                </div>
+            </div>
+          </div>
+          <div class="mt-5 flex justify-between border-t border-[var(--line)] pt-4"><button id="processBackButton"
+              class="secondary-button">← Review shots</button><button class="primary-button" data-mode="export">Continue
+              to export →</button></div>
+        </section>
+
+        <section id="exportView" class="view" aria-labelledby="exportTitle">
+          <div class="mb-6">
+            <div class="eyebrow">Step 05 · Export</div>
+            <h1 id="exportTitle" class="display-type mt-1 text-2xl font-bold">Save your rolls to disk.</h1>
+            <p class="mt-2 text-xs subtle">Export processed positives, with the option to also include untouched raw negative crops. ZIP archives group files into folders by roll.</p>
+          </div>
+          <div class="panel p-5">
+            <div class="toggle-row">
+              <div>
+                <div class="text-sm font-bold">Also export raw negatives</div>
+                <div class="mt-1 text-xs subtle">Include the rectified negative crop alongside each processed positive, with a _neg_ filename prefix.</div>
+              </div><input id="rawExportToggle" class="switch" type="checkbox"
+                aria-label="Also export raw negatives">
+            </div>
+            <div class="mt-4 text-xs subtle">All captured rolls are included. Export individual PNG files or download a ZIP archive with a folder for each roll.</div>
+          </div>
+          <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div id="exportStatus" class="status-line" role="status">Ready to export all rolls.</div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button id="exportRawButton" class="secondary-button">Export raw data <span aria-hidden="true">↗</span></button>
+              <button id="exportButton" class="primary-button">Export individual PNGs <span
+                  aria-hidden="true">↗</span></button>
+              <button id="exportZipButton" class="secondary-button">Export all as ZIP <span
+                  aria-hidden="true">↗</span></button>
+            </div>
+          </div>
+          <div id="exportProgress" class="progress-track mt-4 hidden"><span id="exportProgressFill"></span></div>
+          <div class="mt-5 border-t border-[var(--line)] pt-4"><button class="secondary-button" data-mode="process">←
+              Process</button></div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <dialog id="progressDialog" class="progress-dialog" aria-labelledby="progressTitle" aria-describedby="progressMessage">
+    <div class="progress-dialog-mark" aria-hidden="true"></div>
+    <div class="eyebrow">Negative Lab · Working</div>
+    <h2 id="progressTitle" class="display-type mt-2 text-xl font-bold">Processing image</h2>
+    <p id="progressMessage" class="mt-2 text-xs subtle" role="status" aria-live="polite">Preparing image data…</p>
+    <progress id="progressMeter" class="operation-progress mt-5" max="100" value="0" aria-label="Operation progress"></progress>
+    <div id="progressPercent" class="mt-2 text-right text-xs subtle">0%</div>
+  </dialog>
+  <input id="loadProfileInput" type="file" accept=".txt,.json,text/plain,application/json" hidden>
+  <input id="importRawDataInput" type="file" accept=".json,.nlraw,application/json" hidden>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="js/core/state.js" defer></script>
+  <script src="js/modules/vision.js" defer></script>
+  <script src="js/modules/image-processing.js" defer></script>
+  <script src="js/modules/review.js" defer></script>
+  <script src="js/modules/export.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+
+</html>
