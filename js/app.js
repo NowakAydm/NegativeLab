@@ -1375,6 +1375,47 @@
     updateProcessState();
     queueProcessPreview(true);
   }
+  // Reference pixel pickers: the preview base is the cropped original scan (before inversion/Z-Log2 decode),
+  // so the clicked value maps directly onto the roll's raw-scan levels.
+  function setPickMode(mode) {
+    state.pickMode = state.pickMode === mode ? null : mode;
+    $("#pickWhiteButton").setAttribute("aria-pressed", String(state.pickMode === "white"));
+    $("#pickBlackButton").setAttribute("aria-pressed", String(state.pickMode === "black"));
+    $("#pickWhiteButton").classList.toggle("active", state.pickMode === "white");
+    $("#pickBlackButton").classList.toggle("active", state.pickMode === "black");
+    $("#processPreview").style.cursor = state.pickMode ? "crosshair" : "";
+  }
+  $("#pickWhiteButton").addEventListener("click", () => setPickMode("white"));
+  $("#pickBlackButton").addEventListener("click", () => setPickMode("black"));
+  $("#processPreview").addEventListener("click", (event) => {
+    const mode = state.pickMode;
+    const image = state.previewBaseData;
+    if (!mode || !image) return;
+    const canvas = event.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = clamp(Math.floor((event.clientX - rect.left) / rect.width * image.width), 0, image.width - 1);
+    const y = clamp(Math.floor((event.clientY - rect.top) / rect.height * image.height), 0, image.height - 1);
+    const offset = (y * image.width + x) * 4;
+    const invert = $("#invertToggle").checked;
+    const settings = activeAdjustmentSettings();
+    rgbChannels.forEach((channel, index) => {
+      const working = invert ? 255 - image.data[offset + index] : image.data[offset + index];
+      const range = workingRange(settings.levels[channel], invert);
+      if (mode === "white") range.max = clamp(working, 1, 255);
+      else range.min = clamp(working, 0, 254);
+      if (range.min >= range.max) {
+        if (mode === "white") range.min = range.max - 1;
+        else range.max = range.min + 1;
+      }
+      settings.levels[channel] = invert
+        ? { min: 255 - range.max, max: 255 - range.min }
+        : { min: range.min, max: range.max };
+    });
+    setPickMode(mode);
+    updateProcessState();
+    queueProcessPreview();
+  });
   $("#previewAdjustmentsToggle").addEventListener("change", () => {
     const roll = activeRoll();
     const shot = roll.shots[roll.previewShotIndex || 0];
