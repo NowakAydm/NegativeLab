@@ -46,8 +46,10 @@
 
     // Z-Log2 -> scene linear (community-fitted curve, normalized so 18% gray lands near 0.18).
     function zlog2ToLinear(x) {
-      const cut = 0.12658, a = 0.01579, b = 150, c = 1.0543, d = 139.73, slope = 0.0523, gain = 13.5;
-      return (x < cut ? x * slope : (Math.pow(b, x * c) - a) / d) * gain;
+      const cut = 0.12658, a = 0.01579, b = 150, c = 1.0543, d = 139.73, gain = 13.5;
+      const logPart = (value) => (Math.pow(b, value * c) - a) / d;
+      // The linear toe's slope is derived so both segments meet at the cut (no jump in the shadows).
+      return (x < cut ? x * (logPart(cut) / cut) : logPart(x)) * gain;
     }
 
     function decodeToLinear(encoded) {
@@ -133,10 +135,18 @@
       }));
     }
 
-    function applyPixel(data, index, imageAdjustments, luts) {
-      const red = luts.red[data[index]];
-      const green = luts.green[data[index + 1]];
-      const blue = luts.blue[data[index + 2]];
+    // Linear interpolation so fractional (averaged) inputs keep their sub-code precision.
+    function lookup(lut, value) {
+      const input = clamp(value, 0, 255);
+      const lower = Math.floor(input);
+      const upper = Math.min(255, lower + 1);
+      return lut[lower] + (lut[upper] - lut[lower]) * (input - lower);
+    }
+
+    function applyPixel(data, index, imageAdjustments, luts, source = data) {
+      const red = lookup(luts.red, source[index]);
+      const green = lookup(luts.green, source[index + 1]);
+      const blue = lookup(luts.blue, source[index + 2]);
       const inputLuminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
       const outputLuminance = evaluateMaster(luts.master, inputLuminance);
       if (imageAdjustments.mode === "bw") {
@@ -159,14 +169,14 @@
       }
     }
 
-    async function applyAdjustments(data, imageAdjustments, invert, onProgress = () => {}) {
+    async function applyAdjustments(data, imageAdjustments, invert, onProgress = () => {}, source = data) {
       const luts = buildAdjustmentLuts(imageAdjustments, invert);
       for (let index = 0; index < data.length; index += 4) {
         if (index && index % 262144 === 0) {
           onProgress(index / data.length * 100);
           await yieldToBrowser();
         }
-        applyPixel(data, index, imageAdjustments, luts);
+        applyPixel(data, index, imageAdjustments, luts, source);
       }
       onProgress(100);
     }
@@ -183,6 +193,7 @@
         (distance(firstCorners[0], firstCorners[3]) + distance(firstCorners[1], firstCorners[2])) / 2)));
       const destination = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, outputWidth, 0, outputWidth, outputHeight, 0, outputHeight]);
       let average = null;
+      let floatAverage = null;
       let flipped = null;
       try {
         let processedFrames = 0;
@@ -208,6 +219,8 @@
             warped = new cv.Mat();
             source.data.set(frame.pixels);
             cv.warpPerspective(source, warped, transform, new cv.Size(outputWidth, outputHeight), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
+            // Accumulate in float so averaging adds real sub-code precision instead of re-rounding to 8 bits.
+            warped.convertTo(warped, cv.CV_32FC4);
             if (!average) average = warped.clone();
             else cv.addWeighted(average, processedFrames / (processedFrames + 1), warped, 1 / (processedFrames + 1), 0, average);
             processedFrames++;
@@ -222,6 +235,9 @@
         onProgress({ stage: "Applying curves and output transform", current: chosenFrames.length, total: chosenFrames.length, percent: 88 });
         await yieldToBrowser();
         const invert = !raw && ($("#invertToggle")?.checked ?? true);
+        floatAverage = average;
+        average = new cv.Mat();
+        floatAverage.convertTo(average, cv.CV_8UC4);
         if (!raw) {
           const imageAdjustments = adjustments || {
             mode: "color", brightness: 0, contrast: 100, tint: 0, gamma: "srgb", curves: {}
@@ -231,7 +247,7 @@
             current: chosenFrames.length,
             total: chosenFrames.length,
             percent: 88 + percent * 0.07
-          }));
+          }), floatAverage.data32F);
           for (let index = 3; index < average.data.length; index += 4) average.data[index] = 255;
         }
         let final = average;
@@ -251,6 +267,7 @@
         return blob;
       } finally {
         destination.delete();
+        floatAverage?.delete();
         average?.delete();
         flipped?.delete();
       }
