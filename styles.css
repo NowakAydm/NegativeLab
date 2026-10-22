@@ -114,6 +114,12 @@ button {
   background: #242a26;
 }
 
+.reference-pick-button[aria-pressed="true"] {
+  border-color: var(--teal);
+  background: rgba(107, 217, 199, .16);
+  color: var(--teal);
+}
+
 .primary-button {
   background: var(--lime);
   color: #151911;
@@ -553,6 +559,10 @@ button {
 
 .process-adjustment-toolbar label {
   width: min(190px, 100%);
+}
+
+#processPreview.reference-pick-active {
+  cursor: crosshair;
 }
 
 .process-scope-toggle {

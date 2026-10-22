@@ -666,9 +666,13 @@
     try {
       const image = captureSourceContext.getImageData(0, 0, width, height);
       applyAdjustments(image.data, settings, true).then(() => {
-        if (sequence === state.capturePreviewSequence && state.capturePreviewKey === key) {
-          capturePreviewContext.putImageData(image, 0, 0);
-        }
+        return createImageBitmap(image).then((bitmap) => {
+          try {
+            if (sequence === state.capturePreviewSequence && state.capturePreviewKey === key) {
+              capturePreviewContext.drawImage(bitmap, 0, 0, width, height);
+            }
+          } finally { bitmap.close(); }
+        });
       }).catch((error) => notify(`Capture preview adjustment failed: ${error.message}`, true))
         .finally(() => { state.capturePreviewBusy = false; });
     } catch (error) {
@@ -1086,6 +1090,8 @@
     roll.previewShotIndex = clamp(Number(roll.previewShotIndex) || 0, 0, Math.max(0, roll.shots.length - 1));
     const previewShot = roll.shots[roll.previewShotIndex] || null;
     $("#previewAdjustmentsToggle").disabled = !previewShot;
+    $("#pickReferenceWhiteButton").disabled = !previewShot;
+    $("#pickReferenceBlackButton").disabled = !previewShot;
     $("#previewAdjustmentsToggle").checked = Boolean(previewShot?.adjustments);
     $("#adjustmentScopeTitle").textContent = previewShot?.adjustments
       ? "Shot-specific image adjustments"
@@ -1156,6 +1162,8 @@
       state.previewBaseKey = "";
       state.previewBaseData = null;
       state.previewHistogram = null;
+      previewPickBitmap?.close();
+      previewPickBitmap = null;
     } else if (state.previewBaseData) {
       renderAdjustedPreview().catch((error) => notify(`Preview adjustment failed: ${error.message}`, true));
       return;
@@ -1177,6 +1185,8 @@
       state.previewBaseKey = "";
       state.previewBaseData = null;
       state.previewHistogram = null;
+      previewPickBitmap?.close();
+      previewPickBitmap = null;
       drawCurveEditors();
       canvas.width = 900;
       canvas.height = 520;
@@ -1190,6 +1200,10 @@
       return;
     }
     const previewKey = makePreviewKey(roll, shot);
+    if (previewPickBitmap && state.previewBaseKey !== previewKey) {
+      previewPickBitmap.close();
+      previewPickBitmap = null;
+    }
     if (state.previewBaseData && state.previewBaseKey === previewKey) {
       await renderAdjustedPreview();
       return;
@@ -1210,6 +1224,10 @@
       });
       if (sequence !== state.previewSequence || state.mode !== "process" || previewKey !== makePreviewKey(activeRoll(), activeRoll().shots[activeRoll().previewShotIndex || 0] || shot)) return;
       const image = await createImageBitmap(blob);
+      if (sequence !== state.previewSequence || state.mode !== "process" || previewKey !== makePreviewKey(activeRoll(), activeRoll().shots[activeRoll().previewShotIndex || 0] || shot)) {
+        image.close();
+        return;
+      }
       const previewScale = Math.min(1, 1200 / image.width, 900 / image.height);
       const previewWidth = Math.max(1, Math.round(image.width * previewScale));
       const previewHeight = Math.max(1, Math.round(image.height * previewScale));
@@ -1224,7 +1242,8 @@
         getAdjustmentSettings()
       );
       state.previewBaseKey = previewKey;
-      image.close();
+      previewPickBitmap?.close();
+      previewPickBitmap = image;
       await renderAdjustedPreview();
     } catch (error) {
       updateProgress(progressId, `Preview failed: ${error.message}`, 100);
@@ -1352,6 +1371,58 @@
     });
   }
   buildAdjustmentControls();
+  let previewPickBitmap = null;
+  let referencePickMode = null;
+  const referencePickButtons = {
+    white: $("#pickReferenceWhiteButton"),
+    black: $("#pickReferenceBlackButton")
+  };
+  function setReferencePickMode(mode) {
+    referencePickMode = referencePickMode === mode ? null : mode;
+    Object.entries(referencePickButtons).forEach(([name, button]) => {
+      button.setAttribute("aria-pressed", String(referencePickMode === name));
+    });
+    $("#processPreview").classList.toggle("reference-pick-active", Boolean(referencePickMode));
+  }
+  Object.entries(referencePickButtons).forEach(([mode, button]) => {
+    button.addEventListener("click", () => setReferencePickMode(mode));
+  });
+  $("#processPreview").addEventListener("click", (event) => {
+    if (!referencePickMode) return;
+    if (!previewPickBitmap) {
+      notify("Wait for the cropped preview to finish loading before picking a reference pixel.", true);
+      return;
+    }
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = clamp(Math.floor((event.clientX - bounds.left) / bounds.width * previewPickBitmap.width), 0, previewPickBitmap.width - 1);
+    const y = clamp(Math.floor((event.clientY - bounds.top) / bounds.height * previewPickBitmap.height), 0, previewPickBitmap.height - 1);
+    const pixelCanvas = document.createElement("canvas");
+    pixelCanvas.width = 1;
+    pixelCanvas.height = 1;
+    const pixelContext = pixelCanvas.getContext("2d", { willReadFrequently: true });
+    pixelContext.drawImage(previewPickBitmap, x, y, 1, 1, 0, 0, 1, 1);
+    const pixel = pixelContext.getImageData(0, 0, 1, 1).data;
+    const settings = activeAdjustmentSettings();
+    const invert = $("#invertToggle").checked;
+    rgbChannels.forEach((channel, index) => {
+      const sample = pixel[index];
+      const whiteEndpoint = referencePickMode === "white";
+      const rawBound = whiteEndpoint === invert ? "min" : "max";
+      const range = settings.levels[channel];
+      if (rawBound === "min") {
+        range.min = clamp(sample, 0, 254);
+        range.max = Math.max(range.max, range.min + 1);
+      } else {
+        range.max = clamp(sample, 1, 255);
+        range.min = Math.min(range.min, range.max - 1);
+      }
+    });
+    const pickedMode = referencePickMode;
+    setReferencePickMode(null);
+    updateProcessState();
+    queueProcessPreview();
+    notify(`Reference ${pickedMode} set from RGB ${pixel[0]}, ${pixel[1]}, ${pixel[2]}.`);
+  });
   createCurveEditors(
     $("#captureCurves"),
     "capture",

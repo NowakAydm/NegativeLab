@@ -271,7 +271,9 @@
                     <option value="bw">Black &amp; white</option>
                   </select></label>
                 <div id="adjustmentScopeTitle" class="eyebrow">Roll-wide image adjustments</div>
-                <div class="flex gap-2">
+                <div class="flex flex-wrap gap-2">
+                  <button id="pickReferenceWhiteButton" class="secondary-button reference-pick-button" type="button" aria-pressed="false" title="Click the preview pixel that should represent white">Pick white</button>
+                  <button id="pickReferenceBlackButton" class="secondary-button reference-pick-button" type="button" aria-pressed="false" title="Click the preview pixel that should represent black">Pick black</button>
                   <button class="secondary-button" type="button" data-profile-action="save" data-profile-scope="process">Save profile</button>
                   <button class="secondary-button" type="button" data-profile-action="load" data-profile-scope="process">Load profile</button>
                 </div>

@@ -32,6 +32,7 @@ Allow camera access when prompted. Wait for the **OpenCV ready** indicator befor
    - The color-corrected review option is only a preview; it does not change the captured data or exported image.
 4. **Process**
    - Choose color or black-and-white output, then adjust levels, brightness, contrast, tint, and RGB/master curves. Adjustments can apply to the roll or to an individual shot.
+   - Use **Pick white** or **Pick black**, then click the matching point in the cropped preview to set its RGB level endpoints from the original crop pixels.
    - Choose whether to invert the negative and select the output gamma.
    - Optionally align and average burst frames on export to reduce noise. The processing preview uses only the first frame.
    - Save and load color-adjustment profiles as `.txt` files.
