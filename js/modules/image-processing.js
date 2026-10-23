@@ -128,14 +128,7 @@
       return lut[lower] + (lut[upper] - lut[lower]) * fraction;
     }
 
-    function transformedCorners(shot, frame) {
-      return frame.corners.map((point, index) => ({
-        x: clamp(point.x + shot.quad[index].x - shot.autoQuad[index].x, 0, shot.width),
-        y: clamp(point.y + shot.quad[index].y - shot.autoQuad[index].y, 0, shot.height)
-      }));
-    }
-
-    // Linear interpolation so fractional (averaged) inputs keep their sub-code precision.
+    // Linear interpolation between adjacent codes keeps the curve smooth between 8-bit inputs.
     function lookup(lut, value) {
       const input = clamp(value, 0, 255);
       const lower = Math.floor(input);
@@ -181,94 +174,72 @@
       onProgress(100);
     }
 
-    async function processShot(shot, { raw = false, stitch = false, preview = false, adjustments = null, onProgress = () => {} } = {}) {
+    async function processShot(shot, { raw = false, preview = false, adjustments = null, onProgress = () => {} } = {}) {
       if (!state.cvReady) throw new Error("OpenCV.js is not ready. Check your internet connection and reload this page.");
-      const count = stitch && $("#averageToggle").checked ? Number($("#averageCount").value) : 1;
-      const chosenFrames = shot.frames.slice(0, count);
-      const firstCorners = transformedCorners(shot, chosenFrames[0]);
+      const corners = shot.quad;
       const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
       const outputWidth = Math.max(1, Math.round(Math.min(shot.width,
-        (distance(firstCorners[0], firstCorners[1]) + distance(firstCorners[3], firstCorners[2])) / 2)));
+        (distance(corners[0], corners[1]) + distance(corners[3], corners[2])) / 2)));
       const outputHeight = Math.max(1, Math.round(Math.min(shot.height,
-        (distance(firstCorners[0], firstCorners[3]) + distance(firstCorners[1], firstCorners[2])) / 2)));
+        (distance(corners[0], corners[3]) + distance(corners[1], corners[2])) / 2)));
       const destination = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, outputWidth, 0, outputWidth, outputHeight, 0, outputHeight]);
-      let average = null;
-      let floatAverage = null;
+      let source = null;
+      let sourcePoints = null;
+      let transform = null;
+      let warped = null;
       let flipped = null;
       try {
-        let processedFrames = 0;
-        onProgress({ stage: "Preparing frame alignment", current: 0, total: chosenFrames.length, percent: 0 });
+        onProgress({ stage: "Cropping and straightening", current: 0, total: 1, percent: 5 });
         await yieldToBrowser();
-        for (const [frameIndex, frame] of chosenFrames.entries()) {
-          onProgress({
-            stage: `Aligning frame ${frameIndex + 1} of ${chosenFrames.length}`,
-            current: frameIndex,
-            total: chosenFrames.length,
-            percent: frameIndex / chosenFrames.length * 85
-          });
-          await yieldToBrowser();
-          let source = null;
-          let sourcePoints = null;
-          let transform = null;
-          let warped = null;
-          try {
-            source = new cv.Mat(shot.height, shot.width, cv.CV_8UC4);
-            sourcePoints = cv.matFromArray(4, 1, cv.CV_32FC2,
-              transformedCorners(shot, frame).flatMap(({ x, y }) => [x, y]));
-            transform = cv.getPerspectiveTransform(sourcePoints, destination);
-            warped = new cv.Mat();
-            source.data.set(frame.pixels);
-            cv.warpPerspective(source, warped, transform, new cv.Size(outputWidth, outputHeight), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
-            // Accumulate in float so averaging adds real sub-code precision instead of re-rounding to 8 bits.
-            warped.convertTo(warped, cv.CV_32FC4);
-            if (!average) average = warped.clone();
-            else cv.addWeighted(average, processedFrames / (processedFrames + 1), warped, 1 / (processedFrames + 1), 0, average);
-            processedFrames++;
-          } finally {
-            source?.delete();
-            sourcePoints?.delete();
-            transform?.delete();
-            warped?.delete();
-          }
-        }
-        if (!average) throw new Error("No frames were available to process.");
-        onProgress({ stage: "Applying curves and output transform", current: chosenFrames.length, total: chosenFrames.length, percent: 88 });
+        source = new cv.Mat(shot.height, shot.width, cv.CV_8UC4);
+        source.data.set(shot.pixels);
+        sourcePoints = cv.matFromArray(4, 1, cv.CV_32FC2, corners.flatMap(({ x, y }) => [x, y]));
+        transform = cv.getPerspectiveTransform(sourcePoints, destination);
+        warped = new cv.Mat();
+        cv.warpPerspective(source, warped, transform, new cv.Size(outputWidth, outputHeight), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
+        // The stored asset is already averaged, so the source Mat can be released before the adjustment pass.
+        source.delete();
+        source = null;
+        onProgress({ stage: "Applying curves and output transform", current: 1, total: 1, percent: 15 });
         await yieldToBrowser();
         const invert = !raw && ($("#invertToggle")?.checked ?? true);
-        floatAverage = average;
-        average = new cv.Mat();
-        floatAverage.convertTo(average, cv.CV_8UC4);
         if (!raw) {
           const imageAdjustments = adjustments || {
             mode: "color", brightness: 0, contrast: 100, tint: 0, gamma: "srgb", curves: {}
           };
-          await applyAdjustments(average.data, imageAdjustments, invert, (percent) => onProgress({
+          await applyAdjustments(warped.data, imageAdjustments, invert, (percent) => onProgress({
             stage: "Applying curves and output transform",
-            current: chosenFrames.length,
-            total: chosenFrames.length,
-            percent: 88 + percent * 0.07
-          }), floatAverage.data32F);
-          for (let index = 3; index < average.data.length; index += 4) average.data[index] = 255;
+            current: 1,
+            total: 1,
+            percent: 15 + percent * 0.8
+          }));
+          for (let index = 3; index < warped.data.length; index += 4) warped.data[index] = 255;
         }
-        let final = average;
+        let final = warped;
         if (shot.flipX || shot.flipY) {
           flipped = new cv.Mat();
-          cv.flip(average, flipped, shot.flipX && shot.flipY ? -1 : shot.flipX ? 1 : 0);
+          cv.flip(warped, flipped, shot.flipX && shot.flipY ? -1 : shot.flipX ? 1 : 0);
           final = flipped;
         }
         const result = document.createElement("canvas");
         result.width = final.cols;
         result.height = final.rows;
-        onProgress({ stage: "Encoding PNG preview", current: chosenFrames.length, total: chosenFrames.length, percent: 99 });
+        // Create the context first so cv.imshow reuses it with the CPU-backed flag.
+        result.getContext("2d", { willReadFrequently: true });
+        onProgress({ stage: "Encoding PNG preview", current: 1, total: 1, percent: 99 });
         await yieldToBrowser();
         cv.imshow(result, final);
         const blob = await new Promise((resolve, reject) => result.toBlob((value) => value ? resolve(value) : reject(new Error("PNG encoding failed.")), "image/png"));
-        onProgress({ stage: "Complete", current: chosenFrames.length, total: chosenFrames.length, percent: 100 });
+        result.width = 0;
+        result.height = 0;
+        onProgress({ stage: "Complete", current: 1, total: 1, percent: 100 });
         return blob;
       } finally {
         destination.delete();
-        floatAverage?.delete();
-        average?.delete();
+        source?.delete();
+        sourcePoints?.delete();
+        transform?.delete();
+        warped?.delete();
         flipped?.delete();
       }
     }

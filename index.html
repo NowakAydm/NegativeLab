@@ -68,8 +68,7 @@
             <p class="mt-2 text-xs subtle">Choose your camera and resolution, then place the negative in frame and continue.</p>
           </div>
           <div class="preview-shell" id="previewShell">
-            <video id="cameraVideo" autoplay playsinline muted></video><canvas id="motionCanvas"
-              aria-hidden="true"></canvas>
+            <video id="cameraVideo" autoplay playsinline muted></video>
             <div class="preview-corner tl"></div>
             <div class="preview-corner tr"></div>
             <div class="preview-corner bl"></div>
@@ -132,10 +131,6 @@
               <div class="eyebrow">Step 02 · Roll <span id="captureRoll">01</span></div>
               <h1 id="captureTitle" class="display-type mt-1 text-2xl font-bold">Capture a burst of 1 frame.</h1>
             </div>
-            <button id="autoCaptureToggle" class="secondary-button capture-toggle" type="button" aria-pressed="false"
-              aria-label="Enable automatic capture"
-              title="Optional automatic capture when a stable frame is detected"><span class="capture-indicator"
-                aria-hidden="true"></span><span id="autoCaptureLabel">Auto capture off</span></button>
           </div>
           <div class="preview-shell" id="capturePreviewShell"><canvas id="capturePreviewCanvas"
               aria-label="Live camera preview"></canvas>
@@ -183,9 +178,10 @@
             <div id="captureStatusCapture" class="status-line" role="status">Start the camera in Setup, then capture a
               burst.</div>
             <div class="flex flex-wrap items-center gap-2">
-              <button id="importRawDataButton" class="secondary-button" type="button">Import raw data</button>
               <button id="captureNowButton" class="primary-button" disabled><span id="captureBurstButtonLabel">Capture burst · 1 frame</span>
                 <kbd>Space</kbd></button>
+              <button id="importShotButton" class="secondary-button" type="button">Import image</button>
+              <input id="importShotInput" type="file" accept="image/png,image/jpeg,image/webp" multiple class="hidden">
             </div>
           </div>
           <div class="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4"><button
@@ -303,23 +299,6 @@
                     <option value="off">Off</option>
                   </select>
                 </label>
-                <div class="toggle-row">
-                  <div>
-                    <div class="text-sm font-bold">Stitch burst frames on export</div>
-                    <div class="mt-1 text-xs subtle">Register and average burst frames during export to reduce noise.
-                      The preview always processes only the first frame.</div>
-                  </div><input id="averageToggle" class="switch" type="checkbox" checked
-                    aria-label="Align and average burst frames">
-                </div>
-                <div class="py-4">
-                  <div class="flex items-center justify-between"><label for="averageCount"
-                      class="text-sm font-bold">Frames stitched on export</label><span id="averageCountLabel" class="badge">16 /
-                      16</span></div>
-                  <input id="averageCount" class="mt-3 w-full" type="range" min="1" max="16" value="16"
-                    aria-label="Number of frames to average">
-                </div>
-                <div class="mt-3 border-t border-[var(--line)] pt-4 text-xs subtle">
-                  <p class="mt-2">More frames improve noise and motion averaging. Export aligns the selected individual frame crops before averaging.</p>
                 </div>
             </div>
           </div>
@@ -347,7 +326,6 @@
           <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
             <div id="exportStatus" class="status-line" role="status">Ready to export all rolls.</div>
             <div class="flex flex-wrap items-center gap-2">
-              <button id="exportRawButton" class="secondary-button">Export raw data <span aria-hidden="true">↗</span></button>
               <button id="exportButton" class="primary-button">Export individual PNGs <span
                   aria-hidden="true">↗</span></button>
               <button id="exportZipButton" class="secondary-button">Export all as ZIP <span
@@ -370,10 +348,8 @@
     <div id="progressPercent" class="mt-2 text-right text-xs subtle">0%</div>
   </dialog>
   <input id="loadProfileInput" type="file" accept=".txt,.json,text/plain,application/json" hidden>
-  <input id="importRawDataInput" type="file" accept=".json,.nlraw,application/json" hidden>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="js/core/state.js" defer></script>
-  <script src="js/modules/vision.js" defer></script>
   <script src="js/modules/image-processing.js" defer></script>
   <script src="js/modules/review.js" defer></script>
   <script src="js/modules/export.js" defer></script>

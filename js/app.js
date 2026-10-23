@@ -2,7 +2,6 @@
   "use strict";
 
   const { state, $, activeRoll, activeShot, pad, clamp, notify, beginProgress, updateProgress, endProgress } = window.NegativeLabCore;
-  const { frameContour, detectFrameCorners, detectFilmGuides } = window.NegativeLabVision;
   const MAX_BURST_FRAME_COUNT = 16;
   const imageProcessor = window.NegativeLabImageProcessing({ state, $, clamp });
   const { rawToLinear, workingRange } = imageProcessor;
@@ -75,84 +74,6 @@
     return normalized;
   }
   state.livePreviewAdjustments = normalizeAdjustments(state.livePreviewAdjustments || defaultAdjustments("color"));
-  restoreSession();
-
-  function serializeRollData() {
-    const snapshot = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      rolls: state.rolls.map((roll) => ({
-        number: roll.number,
-        name: roll.name,
-        adjustments: normalizeAdjustments(roll.adjustments || defaultAdjustments()),
-        previewShotIndex: clamp(Number(roll.previewShotIndex) || 0, 0, Math.max(0, roll.shots.length - 1)),
-        shots: roll.shots.map((shot) => ({
-          number: shot.number,
-          width: shot.width,
-          height: shot.height,
-          quad: shot.quad?.map(({ x, y }) => ({ x, y })) || [],
-          autoQuad: shot.autoQuad?.map(({ x, y }) => ({ x, y })) || [],
-          filmGuides: shot.filmGuides?.map(({ x, y }) => ({ x, y })) || null,
-          autoFilmGuides: shot.autoFilmGuides?.map(({ x, y }) => ({ x, y })) || null,
-          filmCrop: shot.filmCrop ? { ...shot.filmCrop } : null,
-          adjustMode: shot.adjustMode || "corners",
-          flipX: Boolean(shot.flipX),
-          flipY: Boolean(shot.flipY),
-          adjustments: normalizeAdjustments(shot.adjustments || null),
-          frames: shot.frames.map((frame) => ({
-            corners: frame.corners?.map(({ x, y }) => ({ x, y })) || [],
-            pixels: Array.from(frame.pixels || [])
-          })),
-          thumbnail: shot.thumbnail || "",
-          source: shot.source || "manual",
-          createdAt: shot.createdAt || Date.now()
-        }))
-      }))
-    };
-    return JSON.stringify(snapshot, null, 2);
-  }
-
-  function parseRawDataFile(text) {
-    let parsed;
-    try { parsed = JSON.parse(text); }
-    catch (error) { throw new Error("This file is not valid JSON raw data."); }
-    if (!parsed || !Array.isArray(parsed.rolls)) throw new Error("This file does not contain a valid Negative Lab raw-data export.");
-    return parsed.rolls.map((roll, rollIndex) => {
-      const number = Number(roll.number) || rollIndex + 1;
-      const shots = Array.isArray(roll.shots) ? roll.shots.map((shot, shotIndex) => {
-        const validatedFrames = Array.isArray(shot.frames) ? shot.frames.map((frame) => ({
-          corners: Array.isArray(frame?.corners) ? frame.corners.map(({ x, y }) => ({ x: Number(x), y: Number(y) })) : [],
-          pixels: Array.isArray(frame?.pixels) ? Uint8ClampedArray.from(frame.pixels) : new Uint8ClampedArray(0)
-        })) : [];
-        return {
-          number: Number(shot.number) || shotIndex + 1,
-          width: Number(shot.width) || 0,
-          height: Number(shot.height) || 0,
-          quad: Array.isArray(shot.quad) ? shot.quad.map(({ x, y }) => ({ x: Number(x), y: Number(y) })) : [],
-          autoQuad: Array.isArray(shot.autoQuad) ? shot.autoQuad.map(({ x, y }) => ({ x: Number(x), y: Number(y) })) : [],
-          filmGuides: Array.isArray(shot.filmGuides) ? shot.filmGuides.map(({ x, y }) => ({ x: Number(x), y: Number(y) })) : null,
-          autoFilmGuides: Array.isArray(shot.autoFilmGuides) ? shot.autoFilmGuides.map(({ x, y }) => ({ x: Number(x), y: Number(y) })) : null,
-          filmCrop: shot.filmCrop ? { ...shot.filmCrop } : null,
-          adjustMode: shot.adjustMode || "corners",
-          flipX: Boolean(shot.flipX),
-          flipY: Boolean(shot.flipY),
-          adjustments: normalizeAdjustments(shot.adjustments || null),
-          frames: validatedFrames,
-          thumbnail: String(shot.thumbnail || ""),
-          source: shot.source || "manual",
-          createdAt: Number(shot.createdAt) || Date.now()
-        };
-      }) : [];
-      return {
-        number,
-        name: String(roll.name || `Roll ${pad(number)}`),
-        adjustments: normalizeAdjustments(roll.adjustments || defaultAdjustments()),
-        previewShotIndex: clamp(Number(roll.previewShotIndex) || 0, 0, Math.max(0, shots.length - 1)),
-        shots
-      };
-    });
-  }
-
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -164,67 +85,10 @@
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
-  async function importRawData(file) {
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const importedRolls = parseRawDataFile(text);
-      if (!importedRolls.length) {
-        notify("This raw data file does not contain any captured frames.", true);
-        return;
-      }
-      state.rolls = importedRolls;
-      state.rollIndex = 0;
-      const firstImportedRoll = state.rolls[0] || { previewShotIndex: 0, shots: [] };
-      state.selectedShotIndex = clamp(Number(firstImportedRoll.previewShotIndex) || 0, 0, Math.max(0, (firstImportedRoll.shots?.length || 1) - 1));
-      updateCounts();
-      setMode("capture");
-      notify(`Imported ${state.rolls.reduce((total, roll) => total + roll.shots.length, 0)} shot(s) across ${state.rolls.length} roll(s).`);
-    } catch (error) {
-      notify(error.message || "Unable to import raw data.", true);
-    }
-  }
-
-  function exportRawData() {
-    const totalShots = state.rolls.reduce((total, roll) => total + roll.shots.length, 0);
-    if (!totalShots) {
-      notify("There are no captured frames to export as raw data.", true);
-      return;
-    }
-    const blob = new Blob([serializeRollData()], { type: "application/json" });
-    const rollName = state.rolls.length === 1 ? state.rolls[0].name || `Roll ${pad(state.rolls[0].number)}` : "NegativeLab_Raw_Data";
-    downloadBlob(blob, `${rollName.replace(/\s+/g, "_")}_raw_data.json`);
-    notify("Raw capture data export started.");
-  }
-
-  function saveSession() {
-    try {
-      if (window.localStorage) window.localStorage.setItem("negativeLabSession", serializeRollData());
-    } catch (error) {
-      console.warn("Could not save the current session", error);
-    }
-  }
-
-  function restoreSession() {
-    try {
-      const raw = window.localStorage?.getItem("negativeLabSession");
-      if (!raw) return;
-      const importedRolls = parseRawDataFile(raw);
-      if (!importedRolls.length) return;
-      state.rolls = importedRolls;
-      state.rollIndex = 0;
-      state.selectedShotIndex = clamp(Number(state.rolls[0]?.previewShotIndex || 0), 0, Math.max(0, (state.rolls[0]?.shots?.length || 1) - 1));
-    } catch (error) {
-      console.warn("Could not restore the previous session", error);
-    }
-  }
-
   function updateCssPreview(canvas) {
     canvas.style.filter = "none";
   }
   const video = $("#cameraVideo");
-  const motionCanvas = $("#motionCanvas");
-  const motionContext = motionCanvas.getContext("2d", { willReadFrequently: true });
   const capturePreviewCanvas = $("#capturePreviewCanvas");
   const capturePreviewContext = capturePreviewCanvas.getContext("2d");
   const captureSourceCanvas = document.createElement("canvas");
@@ -277,15 +141,6 @@
     } catch (error) { console.warn("Could not play capture sound", error); }
   }
 
-  function setAutoCapture(enabled) {
-    state.autoCapture = enabled;
-    const toggle = $("#autoCaptureToggle");
-    toggle.setAttribute("aria-pressed", String(enabled));
-    toggle.setAttribute("aria-label", `${enabled ? "Disable" : "Enable"} automatic capture`);
-    toggle.classList.toggle("armed", enabled);
-    $("#autoCaptureLabel").textContent = `Auto capture ${enabled ? "on" : "off"}`;
-  }
-
   function updateBurstFrameCountDisplay() {
     const count = state.burstFrameCount;
     const frameLabel = `${count} ${count === 1 ? "frame" : "frames"}`;
@@ -294,7 +149,7 @@
     $("#decreaseBurstFrameCount").disabled = count <= 1;
     $("#increaseBurstFrameCount").disabled = count >= MAX_BURST_FRAME_COUNT;
     $("#captureTitle").textContent = `Capture a burst of ${frameLabel}.`;
-    $("#captureBurstDescription").innerHTML = `Press <kbd>Space</kbd> or click the button to capture ${exposureLabel}. Each frame gets its own corner detection to account for movement and improve alignment.`;
+    $("#captureBurstDescription").innerHTML = `Press <kbd>Space</kbd> or click the button to capture ${exposureLabel}. Adjust the crop manually in Review.`;
     $("#captureBurstButtonLabel").textContent = `Capture burst · ${frameLabel}`;
   }
 
@@ -347,7 +202,7 @@
     if (state.mode !== "capture") return;
     event.preventDefault();
     unlockCaptureAudio();
-    captureBurst("manual");
+    captureBurst();
   });
 
   function updateCounts() {
@@ -362,7 +217,6 @@
     $("#captureRoll").textContent = pad(roll.number);
     renderFilmList();
     renderRollList();
-    saveSession();
   }
 
   function renderRollList() {
@@ -419,7 +273,7 @@
       image.src = shot.thumbnail;
       image.alt = "";
       const detail = document.createElement("span");
-      detail.innerHTML = `<span class="eyebrow">Shot ${pad(shot.number)}</span><span class="mt-1 block text-[10px] subtle">${shot.frames.length} frame burst</span>`;
+      detail.innerHTML = `<span class="eyebrow">Shot ${pad(shot.number)}</span><span class="mt-1 block text-[10px] subtle">${shot.frameCount} frame burst</span>`;
       if (shot.flipX || shot.flipY) {
         const flip = document.createElement("span");
         flip.className = "flip-indicators";
@@ -567,7 +421,7 @@
       await enumerateCameras();
       const track = state.stream.getVideoTracks()[0];
       const settings = track.getSettings();
-      $("#liveLabel").textContent = "Live · stable frame detection";
+      $("#liveLabel").textContent = "Live · camera connected";
       const actualWidth = settings.width || video.videoWidth;
       const actualHeight = settings.height || video.videoHeight;
       const loweredResolution = requestedSize && (actualWidth < requestedSize[0] || actualHeight < requestedSize[1]);
@@ -576,13 +430,9 @@
         ? `Camera ready at ${actualWidth} × ${actualHeight}; the requested resolution was unavailable. Place a negative in view and continue to capture.`
         : resolutionSetting === "device"
           ? `Camera ready using device settings at ${actualWidth} × ${actualHeight}. Place a negative in view and continue to capture.`
-          : state.cvReady ? "Camera ready. Place a negative in view and continue to capture." : "Camera ready. Waiting for OpenCV to initialize.";
+          : "Camera ready. Place a negative in view and continue to capture.";
       $("#captureNowButton").disabled = false;
       $("#startCameraButton").textContent = "Restart camera";
-      resizeMotionCanvas();
-      state.previousGray?.delete();
-      state.previousGray = null;
-      state.lastContour = null;
       updateProgress(progressId, `Camera ready · ${actualWidth} × ${actualHeight}`, 100);
     } catch (error) {
       let message;
@@ -615,29 +465,14 @@
 
   $("#startCameraButton").addEventListener("click", startCamera);
   $("#startCameraButton").addEventListener("click", unlockCaptureAudio);
-  $("#importRawDataButton").addEventListener("click", () => $("#importRawDataInput").click());
-  $("#importRawDataInput").addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    await importRawData(file);
-    event.target.value = "";
-  });
-  $("#exportRawButton").addEventListener("click", exportRawData);
   $("#cameraSelect").addEventListener("change", () => { if (state.stream) startCamera(); });
   $("#resolutionSelect").addEventListener("change", () => { if (state.stream) startCamera(); });
   navigator.mediaDevices?.addEventListener?.("devicechange", enumerateCameras);
   enumerateCameras();
 
-  function resizeMotionCanvas() {
-    const width = video.videoWidth || 640;
-    const height = video.videoHeight || 480;
-    motionCanvas.width = width;
-    motionCanvas.height = height;
-  }
-
   function capturePreviewLoop(now) {
     requestAnimationFrame(capturePreviewLoop);
-    if (!state.stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    if (!state.stream || state.capturing || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
     const scale = Math.min(1, 1280 / video.videoWidth, 900 / video.videoHeight);
     const width = Math.max(1, Math.round(video.videoWidth * scale));
     const height = Math.max(1, Math.round(video.videoHeight * scale));
@@ -666,13 +501,9 @@
     try {
       const image = captureSourceContext.getImageData(0, 0, width, height);
       applyAdjustments(image.data, settings, true).then(() => {
-        return createImageBitmap(image).then((bitmap) => {
-          try {
-            if (sequence === state.capturePreviewSequence && state.capturePreviewKey === key) {
-              capturePreviewContext.drawImage(bitmap, 0, 0, width, height);
-            }
-          } finally { bitmap.close(); }
-        });
+        if (sequence === state.capturePreviewSequence && state.capturePreviewKey === key) {
+          capturePreviewContext.putImageData(image, 0, 0);
+        }
       }).catch((error) => notify(`Capture preview adjustment failed: ${error.message}`, true))
         .finally(() => { state.capturePreviewBusy = false; });
     } catch (error) {
@@ -725,65 +556,20 @@
   });
   updateCapturePreviewFilter();
 
-  function visionLoop(now) {
-    requestAnimationFrame(visionLoop);
-    if (!state.cvReady || !state.stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || now - state.lastVisionAt < 100) return;
-    state.lastVisionAt = now;
-    const detectWidth = 640;
-    const detectHeight = Math.max(240, Math.round(detectWidth * (video.videoHeight / video.videoWidth)));
-    motionCanvas.width = detectWidth;
-    motionCanvas.height = detectHeight;
-    motionContext.drawImage(video, 0, 0, detectWidth, detectHeight);
-    let rgba, gray, previousSmall, difference;
-    try {
-      rgba = cv.imread(motionCanvas);
-      gray = new cv.Mat();
-      cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
-      cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-      if (state.previousGray) {
-        previousSmall = new cv.Mat();
-        cv.resize(state.previousGray, previousSmall, gray.size());
-        difference = new cv.Mat();
-        cv.absdiff(gray, previousSmall, difference);
-        const mean = cv.mean(difference)[0];
-        if (mean > 2.6) state.lastMotionAt = now;
-      } else state.lastMotionAt = now;
-      const contour = frameContour(gray);
-      state.lastContour = contour;
-      if (state.autoCapture && !state.capturing && now >= state.cooldownUntil && contour && now - state.lastMotionAt > 550) {
-        state.lastMotionAt = now;
-        captureBurst("automatic", contour);
-      }
-      state.previousGray?.delete();
-      state.previousGray = gray.clone();
-      const stable = now - state.lastMotionAt > 550;
-      const status = contour
-        ? `${stable ? "Frame stable" : "Frame moving"} · boundary detected · ${stable ? "ready" : "settling"}`
-        : "Looking for a 3:2 film boundary · keep the backlight and negative in view.";
-      $("#captureStatus").textContent = status;
-      $("#captureStatusCapture").textContent = status;
-    } catch (error) {
-      console.error("OpenCV frame analysis failed", error);
-      $("#captureStatus").textContent = "Frame analysis paused. Restart the camera if this continues.";
-      $("#captureStatusCapture").textContent = "Frame analysis paused. Restart the camera if this continues.";
-    } finally {
-      rgba?.delete(); gray?.delete(); previousSmall?.delete(); difference?.delete();
-    }
-  }
-
   function frameToPixels() {
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) throw new Error("The camera has no readable frame yet.");
-    captureCanvas.width = width;
-    captureCanvas.height = height;
+    if (captureCanvas.width !== width || captureCanvas.height !== height) {
+      captureCanvas.width = width;
+      captureCanvas.height = height;
+    }
     captureContext.drawImage(video, 0, 0, width, height);
-    return { width, height, pixels: new Uint8ClampedArray(captureContext.getImageData(0, 0, width, height).data) };
+    return { width, height, pixels: captureContext.getImageData(0, 0, width, height).data };
   }
 
-  async function captureBurst(source) {
+  async function captureBurst() {
     if (state.capturing || !state.stream) return;
-    if (!state.cvReady) { notify("Wait for OpenCV to finish loading before capturing a burst.", true); return; }
     const frameCount = state.burstFrameCount;
     state.capturing = true;
     document.body.classList.remove("capture-ready");
@@ -791,47 +577,56 @@
     let succeeded = false;
     const progressId = beginProgress("Capturing burst", `Preparing the camera for a ${frameCount}-frame burst…`);
     $("#captureNowButton").disabled = true;
-    $("#captureStatusCapture").textContent = `Capturing ${frameCount} frame${frameCount === 1 ? "" : "s"} and detecting each frame boundary…`;
-    const frames = [];
+    $("#captureStatusCapture").textContent = `Capturing ${frameCount} frame${frameCount === 1 ? "" : "s"}…`;
     try {
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
-      const detectHeight = Math.max(240, Math.round(640 * video.videoHeight / video.videoWidth));
-      let previousCorners = state.lastContour?.map(({ x, y }) => ({ x: x * (video.videoWidth / 640), y: y * (video.videoHeight / detectHeight) })) || null;
-      let filmGuides = null;
+      let corners = null;
       let thumbnail = "";
+      let width = 0;
+      let height = 0;
+      // Running sum of the burst; only allocated when more than one frame is captured.
+      let sum = null;
+      let pixels = null;
       for (let index = 0; index < frameCount; index++) {
         if (index) await new Promise((resolve) => setTimeout(resolve, 60));
-        updateProgress(progressId, `Capturing and detecting frame ${index + 1} of ${frameCount}`, index / frameCount * 100);
+        updateProgress(progressId, `Capturing frame ${index + 1} of ${frameCount}`, index / frameCount * 100);
         const frame = frameToPixels();
-        const detectedCorners = detectFrameCorners(frame.pixels, frame.width, frame.height, captureCanvas);
-        const corners = detectedCorners || previousCorners;
-        const safeCorners = corners || [
+        width = frame.width;
+        height = frame.height;
+        corners ||= [
           { x: frame.width * .08, y: frame.height * .08 },
           { x: frame.width * .92, y: frame.height * .08 },
           { x: frame.width * .92, y: frame.height * .92 },
           { x: frame.width * .08, y: frame.height * .92 }
         ];
         if (!index) {
-          filmGuides = detectFilmGuides(frame.pixels, frame.width, frame.height, captureCanvas);
-          thumbnail = makeThumbnail({ width: frame.width, height: frame.height, quad: safeCorners }, captureCanvas);
+          thumbnail = makeThumbnail({ width: frame.width, height: frame.height, quad: corners }, captureCanvas);
         }
-        frames.push({ pixels: frame.pixels, corners: safeCorners.map(({ x, y }) => ({ x, y })) });
-        previousCorners = safeCorners;
-        $("#captureStatusCapture").textContent = `Capturing frame ${index + 1} of ${frameCount} · boundary ${detectedCorners ? "detected" : corners ? "using previous frame" : "not found"}`;
+        if (frameCount === 1) {
+          pixels = frame.pixels;
+        } else {
+          sum ||= new Uint16Array(frame.pixels.length);
+          const framePixels = frame.pixels;
+          for (let i = 0; i < sum.length; i++) sum[i] += framePixels[i];
+        }
+        $("#captureStatusCapture").textContent = `Capturing frame ${index + 1} of ${frameCount}`;
       }
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-      const shot = { number: activeRoll().shots.length + 1, width, height, frames, quad: frames[0].corners.map(({ x, y }) => ({ x, y })), autoQuad: frames[0].corners.map(({ x, y }) => ({ x, y })), filmGuides, autoFilmGuides: filmGuides?.map(({ x, y }) => ({ x, y })) || null, filmCrop: null, adjustMode: "corners", flipX: false, flipY: false, thumbnail, source, createdAt: Date.now() };
+      if (sum) {
+        // Averaging happens here so each shot keeps a single 8-bit RGBA asset instead of every burst frame.
+        pixels = new Uint8ClampedArray(sum.length);
+        for (let i = 0; i < sum.length; i++) pixels[i] = Math.round(sum[i] / frameCount);
+        sum = null;
+      }
+      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "corners", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
       activeRoll().shots.push(shot);
       state.selectedShotIndex = activeRoll().shots.length - 1;
       $("#scanFlash").classList.remove("fire");
       void $("#scanFlash").offsetWidth;
       $("#scanFlash").classList.add("fire");
       playCaptureSound();
-      $("#captureStatusCapture").textContent = `Shot ${pad(shot.number)} captured · ${frameCount}-frame burst saved${source === "automatic" ? " · advance the film when ready" : ""}.`;
+      $("#captureStatusCapture").textContent = `Shot ${pad(shot.number)} captured · ${frameCount}-frame burst saved.`;
       updateProgress(progressId, "Burst captured", 100);
       updateCounts();
-      state.cooldownUntil = performance.now() + 1700;
       succeeded = true;
     } catch (error) {
       notify(`Burst capture failed: ${error.message}`, true);
@@ -855,7 +650,7 @@
       thumb = document.createElement("canvas");
       thumb.width = shot.width;
       thumb.height = shot.height;
-      thumb.getContext("2d").putImageData(new ImageData(shot.frames[0].pixels, shot.width, shot.height), 0, 0);
+      thumb.getContext("2d", { willReadFrequently: true }).putImageData(new ImageData(shot.pixels, shot.width, shot.height), 0, 0);
     }
     const result = document.createElement("canvas");
     result.width = 120;
@@ -870,11 +665,72 @@
     return result.toDataURL("image/jpeg", .72);
   }
 
-  $("#captureNowButton").addEventListener("click", () => captureBurst("manual"));
+  $("#captureNowButton").addEventListener("click", captureBurst);
   $("#captureNowButton").addEventListener("click", unlockCaptureAudio);
-  $("#autoCaptureToggle").addEventListener("click", () => {
-    unlockCaptureAudio();
-    setAutoCapture(!state.autoCapture);
+
+  // Imported files become single-frame shots covering the whole image, so they can be reviewed and processed like captures.
+  async function importImages(files) {
+    if (state.capturing || !files.length) return;
+    const roll = activeRoll();
+    let imported = 0;
+    for (const file of files) {
+      let bitmap = null;
+      let canvas = null;
+      try {
+        bitmap = await createImageBitmap(file);
+        const width = bitmap.width;
+        const height = bitmap.height;
+        canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(bitmap, 0, 0);
+        const pixels = context.getImageData(0, 0, width, height).data;
+        const quad = [
+          { x: 0, y: 0 },
+          { x: width - 1, y: 0 },
+          { x: width - 1, y: height - 1 },
+          { x: 0, y: height - 1 }
+        ];
+        const thumbnail = makeThumbnail({ width, height, quad }, canvas);
+        roll.shots.push({
+          number: roll.shots.length + 1,
+          width,
+          height,
+          pixels,
+          frameCount: 1,
+          quad,
+          autoQuad: quad.map(({ x, y }) => ({ x, y })),
+          filmGuides: null,
+          autoFilmGuides: null,
+          filmCrop: null,
+          adjustMode: "corners",
+          flipX: false,
+          flipY: false,
+          thumbnail,
+          createdAt: Date.now(),
+          importedFrom: file.name
+        });
+        imported++;
+      } catch (error) {
+        notify(`Could not import ${file.name}: ${error.message}`, true);
+      } finally {
+        bitmap?.close();
+        if (canvas) canvas.width = canvas.height = 0;
+      }
+    }
+    if (imported) {
+      state.selectedShotIndex = roll.shots.length - 1;
+      updateCounts();
+      $("#captureStatusCapture").textContent = `${imported} image${imported === 1 ? "" : "s"} imported.`;
+    }
+  }
+
+  $("#importShotButton").addEventListener("click", () => $("#importShotInput").click());
+  $("#importShotInput").addEventListener("change", async (event) => {
+    const files = [...event.target.files];
+    event.target.value = "";
+    await importImages(files);
   });
   
 
@@ -1113,11 +969,6 @@
       $(`[data-level-channel="${channel}"][data-level-bound="min"]`).value = range.min;
       $(`[data-level-channel="${channel}"][data-level-bound="max"]`).value = range.max;
     });
-    const frameCount = previewShot?.frames.length || state.burstFrameCount;
-    $("#averageCount").max = frameCount;
-    $("#averageCount").value = clamp(Number($("#averageCount").value), 1, frameCount);
-    $("#averageCountLabel").textContent = `${$("#averageToggle").checked ? $("#averageCount").value : 1} / ${frameCount}`;
-    $("#averageCount").disabled = !$("#averageToggle").checked;
     $("#processSummary").textContent = `${roll.shots.length} shot(s) in Roll ${roll.number}. Roll-wide adjustments apply to each shot unless that shot has its own settings.`;
   }
   function makePreviewKey(roll, shot) {
@@ -1128,9 +979,7 @@
       shot.quad,
       shot.flipX,
       shot.flipY,
-      $("#invertToggle").checked,
-      $("#averageToggle").checked,
-      $("#averageCount").value
+      $("#invertToggle").checked
     ]);
   }
 
@@ -1218,7 +1067,6 @@
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
       const blob = await processShot(shot, {
         raw: true,
-        stitch: false,
         preview: true,
         onProgress: ({ stage, percent }) => updateProgress(progressId, stage, percent)
       });
@@ -1278,7 +1126,7 @@
       }]));
       for (const [index, shot] of roll.shots.entries()) {
         updateProgress(progressId, `Scanning Shot ${pad(shot.number)} (${index + 1}/${roll.shots.length})`, index / roll.shots.length * 100);
-        const blob = await processShot(shot, { raw: true, stitch: false, preview: true });
+        const blob = await processShot(shot, { raw: true, preview: true });
         const image = await createImageBitmap(blob);
         const scale = Math.min(1, 600 / image.width, 600 / image.height);
         const canvas = document.createElement("canvas");
@@ -1466,17 +1314,12 @@
     activeAdjustmentSettings().gamma = event.target.value;
     queueProcessPreview();
   });
-  $("#averageCount").addEventListener("input", () => {
-    const previewFrames = activeRoll().shots[activeRoll().previewShotIndex || 0]?.frames.length || state.burstFrameCount;
-    $("#averageCountLabel").textContent = `${$("#averageCount").value} / ${previewFrames}`;
-  });
   ["invertToggle", "zlog2Toggle"].forEach((id) => {
     $("#" + id).addEventListener("change", () => {
       updateProcessState();
       queueProcessPreview(true);
     });
   });
-  $("#averageToggle").addEventListener("change", updateProcessState);
 
   const PROFILE_FORMAT = "NegativeLabColorProfile";
 
@@ -1583,10 +1426,9 @@
     state.cvReady = true;
     $("#cvStatus").textContent = "OpenCV ready";
     $("#cvStatus").classList.add("ready");
-    if (state.stream) $("#captureStatus").textContent = "Camera and OpenCV ready. Place a negative in view and continue to capture.";
+    if (state.stream) $("#captureStatus").textContent = "Camera and image processing ready.";
   }
   initializeOpenCV();
-  requestAnimationFrame(visionLoop);
   requestAnimationFrame(capturePreviewLoop);
   updateBurstFrameCountDisplay();
   updateCounts();

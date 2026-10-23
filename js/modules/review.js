@@ -4,6 +4,8 @@
   window.NegativeLabReview = function createReview({ state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail, updatePreviewFilter, applyPreviewAdjustments }) {
     const canvas = $("#reviewCanvas");
     const context = canvas.getContext("2d");
+    const sourceCanvas = document.createElement("canvas");
+    let sourceShot = null;
     let processedPreviewShot = null;
     let processedPreviewKey = "";
     let processedPreviewCanvas = null;
@@ -14,6 +16,24 @@
 
     function midpoint(first, second) {
       return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    }
+
+    // Orders corners clockwise on screen as TL, TR, BR, BL so labels 1-4 always match their positions.
+    function canonicalQuad(points) {
+      const center = points.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 });
+      const sorted = points
+        .map((point) => ({ x: point.x, y: point.y, angle: Math.atan2(point.y - center.y, point.x - center.x) }))
+        .sort((first, second) => first.angle - second.angle);
+      const topLeft = -3 * Math.PI / 4;
+      const distanceToTopLeft = (angle) => Math.abs(Math.atan2(Math.sin(angle - topLeft), Math.cos(angle - topLeft)));
+      let start = 0;
+      sorted.forEach((point, index) => {
+        if (distanceToTopLeft(point.angle) < distanceToTopLeft(sorted[start].angle)) start = index;
+      });
+      return [0, 1, 2, 3].map((offset) => {
+        const { x, y } = sorted[(start + offset) % 4];
+        return { x, y };
+      });
     }
 
     function filmGeometry(shot) {
@@ -123,21 +143,29 @@
       if (!shot) return;
       const rect = $("#reviewStage").getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.max(1, Math.round(rect.width * dpr));
-      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      const canvasWidth = Math.max(1, Math.round(rect.width * dpr));
+      const canvasHeight = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+      }
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       const scale = Math.min(rect.width / shot.width, rect.height / shot.height);
       const displayWidth = shot.width * scale;
       const displayHeight = shot.height * scale;
       const offsetX = (rect.width - displayWidth) / 2;
       const offsetY = (rect.height - displayHeight) / 2;
-      const tempCanvas = document.createElement("canvas");
-      tempCanvas.width = shot.width;
-      tempCanvas.height = shot.height;
-      tempCanvas.getContext("2d").putImageData(new ImageData(shot.frames[0].pixels, shot.width, shot.height), 0, 0);
+      if (sourceShot !== shot) {
+        if (sourceCanvas.width !== shot.width || sourceCanvas.height !== shot.height) {
+          sourceCanvas.width = shot.width;
+          sourceCanvas.height = shot.height;
+        }
+        sourceCanvas.getContext("2d", { willReadFrequently: true }).putImageData(new ImageData(shot.pixels, shot.width, shot.height), 0, 0);
+        sourceShot = shot;
+      }
       context.fillStyle = "#080a09";
       context.fillRect(0, 0, rect.width, rect.height);
-      let imageCanvas = tempCanvas;
+      let imageCanvas = sourceCanvas;
       if ($("#reviewNegativeToggle").checked) {
         const previewScale = Math.min(1, 1280 / shot.width, 900 / shot.height);
         const previewWidth = Math.max(1, Math.round(shot.width * previewScale));
@@ -148,7 +176,7 @@
           processedPreviewCanvas.width = previewWidth;
           processedPreviewCanvas.height = previewHeight;
           const previewContext = processedPreviewCanvas.getContext("2d", { willReadFrequently: true });
-          previewContext.drawImage(tempCanvas, 0, 0, previewWidth, previewHeight);
+          previewContext.drawImage(sourceCanvas, 0, 0, previewWidth, previewHeight);
           const previewImage = previewContext.getImageData(0, 0, previewWidth, previewHeight);
           applyPreviewAdjustments(previewImage.data);
           previewContext.putImageData(previewImage, 0, 0);
@@ -390,7 +418,14 @@
       if (isValidQuad(adjusted)) shot.quad = adjusted;
       drawReview();
     });
-    const stopCropDrag = () => { state.drag = null; };
+    const stopCropDrag = () => {
+      const shot = activeShot();
+      if (state.drag?.kind === "corner" && shot && shot.quad?.length === 4) {
+        shot.quad = canonicalQuad(shot.quad);
+        drawReview();
+      }
+      state.drag = null;
+    };
     canvas.addEventListener("pointerup", stopCropDrag);
     canvas.addEventListener("pointercancel", stopCropDrag);
     $("#autoCropButton").addEventListener("click", () => {

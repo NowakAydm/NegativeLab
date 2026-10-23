@@ -777,31 +777,6 @@ input[type="range"] {
   border-color: rgba(107, 217, 199, .38);
 }
 
-.capture-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.capture-toggle.armed {
-  color: var(--lime);
-  border-color: rgba(216, 255, 115, .7);
-  background: rgba(216, 255, 115, .08);
-}
-
-.capture-indicator {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #68716a;
-}
-
-.capture-toggle.armed .capture-indicator {
-  background: var(--lime);
-  box-shadow: 0 0 10px rgba(216, 255, 115, .65);
-}
-
 .key-hint {
   border: 1px solid #49514b;
   padding: 2px 5px;

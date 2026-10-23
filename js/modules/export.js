@@ -31,11 +31,12 @@
       let offset = 0;
       for (const file of files) {
         const name = encoder.encode(file.name);
-        const bytes = new Uint8Array(await file.blob.arrayBuffer());
-        if (bytes.byteLength > 0xffffffff || offset + bytes.byteLength > 0xffffffff) {
+        const size = file.blob.size;
+        if (size > 0xffffffff || offset + size > 0xffffffff) {
           throw new Error("This export is too large for a standard ZIP archive (4 GB limit).");
         }
-        const checksum = crc32(bytes);
+        // Hash transiently; the Blob itself is kept in the archive so no full copy stays resident.
+        const checksum = crc32(new Uint8Array(await file.blob.arrayBuffer()));
         const local = new Uint8Array(30 + name.length);
         const localView = new DataView(local.buffer);
         localView.setUint32(0, 0x04034b50, true);
@@ -44,11 +45,11 @@
         localView.setUint16(10, 0, true);
         localView.setUint16(12, 0x21, true);
         localView.setUint32(14, checksum, true);
-        localView.setUint32(18, bytes.byteLength, true);
-        localView.setUint32(22, bytes.byteLength, true);
+        localView.setUint32(18, size, true);
+        localView.setUint32(22, size, true);
         localView.setUint16(26, name.length, true);
         local.set(name, 30);
-        localParts.push(local, bytes);
+        localParts.push(local, file.blob);
 
         const central = new Uint8Array(46 + name.length);
         const centralView = new DataView(central.buffer);
@@ -59,13 +60,13 @@
         centralView.setUint16(12, 0, true);
         centralView.setUint16(14, 0x21, true);
         centralView.setUint32(16, checksum, true);
-        centralView.setUint32(20, bytes.byteLength, true);
-        centralView.setUint32(24, bytes.byteLength, true);
+        centralView.setUint32(20, size, true);
+        centralView.setUint32(24, size, true);
         centralView.setUint16(28, name.length, true);
         centralView.setUint32(42, offset, true);
         central.set(name, 46);
         centralParts.push(central);
-        offset += local.byteLength + bytes.byteLength;
+        offset += local.byteLength + size;
         if (offset > 0xffffffff) throw new Error("This export is too large for a standard ZIP archive (4 GB limit).");
       }
       const centralSize = centralParts.reduce((size, part) => size + part.byteLength, 0);
@@ -128,8 +129,7 @@
               updateProgress(progressId, `${label} · Roll ${pad(roll.number)} · Shot ${pad(shot.number)}`, completed / totalFiles * 100);
               const blob = await processShot(shot, {
                 raw,
-                stitch: true,
-                adjustments: shot.adjustments || roll.adjustments,
+                adjustments: raw ? null : (shot.adjustments || roll.adjustments),
                 onProgress: ({ stage, percent }) => {
                   const overallPercent = (completed + percent / 100) / totalFiles * 100;
                   updateProgress(progressId, `${label} · Roll ${pad(roll.number)} · Shot ${pad(shot.number)} · ${stage}`, overallPercent);
