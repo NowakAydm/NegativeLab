@@ -31,7 +31,9 @@
     mode,
     brightness: 0,
     contrast: 100,
+    hue: 0,
     tint: 0,
+    desaturate: mode === "bw",
     gamma: "srgb",
     curvePresetVersion: 4,
     levels: cloneLevels(DEFAULT_LEVELS),
@@ -45,12 +47,19 @@
   const adjustmentOptions = [
     ["brightness", "Brightness", -100, 100, 1],
     ["contrast", "Contrast", 0, 200, 1],
-    ["tint", "Tint · magenta ↔ green", -100, 100, 1]
+    ["hue", "Hue", -180, 180, 1]
   ];
   function normalizeAdjustments(settings) {
     const mode = settings?.mode === "bw" ? "bw" : "color";
     const defaults = defaultAdjustments(mode);
-    const normalized = { ...defaults, ...settings, mode };
+    const normalized = {
+      ...defaults,
+      ...settings,
+      mode,
+      hue: Number(settings?.hue ?? 0),
+      tint: Number(settings?.tint ?? 0),
+      desaturate: settings?.desaturate ?? mode === "bw"
+    };
     normalized.levels = cloneLevels(settings?.levels);
     normalized.curves = { ...(settings?.curves || {}) };
     // Before version 4 the RGB curves carried the levels; they are flat now and levels are explicit.
@@ -149,7 +158,7 @@
     $("#decreaseBurstFrameCount").disabled = count <= 1;
     $("#increaseBurstFrameCount").disabled = count >= MAX_BURST_FRAME_COUNT;
     $("#captureTitle").textContent = `Capture a burst of ${frameLabel}.`;
-    $("#captureBurstDescription").innerHTML = `Press <kbd>Space</kbd> or click the button to capture ${exposureLabel}. Adjust the crop manually in Review.`;
+    $("#captureBurstDescription").innerHTML = `Press <kbd>Space</kbd> or click the button to capture ${exposureLabel}. Adjust the crop manually in Crop.`;
     $("#captureBurstButtonLabel").textContent = `Capture burst · ${frameLabel}`;
   }
 
@@ -267,7 +276,7 @@
       const item = document.createElement("button");
       item.className = `film-item${index === state.selectedShotIndex && (state.mode === "review" || state.mode === "process") ? " selected" : ""}`;
       item.type = "button";
-      item.setAttribute("aria-label", `Review shot ${shot.number}`);
+      item.setAttribute("aria-label", `Crop shot ${shot.number}`);
       const image = document.createElement("img");
       image.className = "film-thumb";
       image.src = shot.thumbnail;
@@ -302,8 +311,16 @@
   function setMode(mode) {
     state.mode = mode;
     $(".capture-layout").classList.toggle("review-mode", mode === "review" || mode === "process");
-    const nextLabels = { setup: "Continue to Capture →", capture: "Review Roll →", review: "Process →", process: "Export →", export: "Back to Setup →" };
-    $("#doneButton").textContent = nextLabels[mode];
+    $(".capture-layout").classList.toggle("process-mode", mode === "process");
+    $("#rightSidebar").dataset.mode = mode;
+    document.querySelectorAll("[data-sidebar-mode]").forEach((panel) => {
+      const active = panel.dataset.sidebarMode === mode;
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+    });
+    $("#doneButton").classList.toggle("hidden", mode === "process");
+    const nextLabels = { setup: "Continue to Capture →", capture: "Crop Roll →", review: "Develop Roll →" };
+    $("#doneButton").textContent = nextLabels[mode] || "";
     document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === `${mode}View`));
     document.querySelectorAll(".mode-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.mode === mode));
     if (mode === "review") renderReview();
@@ -315,13 +332,60 @@
       updateProcessState();
       scanRollLevels().finally(() => { if (state.mode === "process") { updateProcessState(); updateProcessPreview(); } });
     }
-    if (mode === "export") updateExportState();
+    if (mode === "process") updateExportState();
     renderFilmList();
   }
 
   document.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+
+  document.querySelectorAll("[data-resize]").forEach((resizer) => {
+    let startX = 0;
+    let startWidth = 0;
+    const side = resizer.dataset.resize;
+    const cssProperty = side === "left" ? "--left-pane-width" : "--right-pane-width";
+    const limits = side === "left" ? [180, 420] : [250, 520];
+    const readWidth = () => Number.parseFloat(getComputedStyle($(".capture-layout")).getPropertyValue(cssProperty)) || (side === "left" ? 250 : 340);
+    const updateWidth = (width) => {
+      const value = clamp(Math.round(width), limits[0], limits[1]);
+      $(".capture-layout").style.setProperty(cssProperty, `${value}px`);
+      resizer.setAttribute("aria-valuenow", String(value));
+    };
+    resizer.addEventListener("pointerdown", (event) => {
+      startX = event.clientX;
+      startWidth = readWidth();
+      resizer.classList.add("dragging");
+      resizer.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    resizer.addEventListener("pointermove", (event) => {
+      if (!resizer.hasPointerCapture(event.pointerId)) return;
+      const direction = side === "left" ? 1 : -1;
+      updateWidth(startWidth + (event.clientX - startX) * direction);
+    });
+    const finishResize = () => {
+      resizer.classList.remove("dragging");
+      window.dispatchEvent(new Event("resize"));
+    };
+    resizer.addEventListener("pointerup", finishResize);
+    resizer.addEventListener("pointercancel", finishResize);
+    resizer.addEventListener("keydown", (event) => {
+      if (event.key === "Home") updateWidth(limits[0]);
+      else if (event.key === "End") updateWidth(limits[1]);
+      else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        updateWidth(readWidth() + direction * (event.shiftKey ? 32 : 12) * (side === "left" ? 1 : -1));
+      } else return;
+      event.preventDefault();
+      window.dispatchEvent(new Event("resize"));
+    });
+    resizer.addEventListener("dblclick", () => {
+      updateWidth(side === "left" ? 250 : 340);
+      window.dispatchEvent(new Event("resize"));
+    });
+  });
   $("#doneButton").addEventListener("click", () => {
-    const nextMode = { setup: "capture", capture: "review", review: "process", process: "export", export: "setup" }[state.mode];
+    const nextMode = { setup: "capture", capture: "review", review: "process" }[state.mode];
+    if (!nextMode) return;
     if (state.mode === "capture" && !activeRoll().shots.length) { notify("Capture at least one frame before reviewing this roll.", true); return; }
     state.selectedShotIndex = clamp(state.selectedShotIndex, 0, Math.max(0, activeRoll().shots.length - 1));
     setMode(nextMode);
@@ -516,12 +580,16 @@
     const settings = state.livePreviewAdjustments;
     settings.brightness = Number($("#captureBrightness").value);
     settings.contrast = Number($("#captureContrast").value);
+    settings.hue = Number($("#captureHue").value);
     $("#captureBrightnessLabel").textContent = String(settings.brightness);
     $("#captureContrastLabel").textContent = `${settings.contrast}%`;
+    $("#captureHueLabel").textContent = `${settings.hue}°`;
     $("#reviewBrightness").value = settings.brightness;
     $("#reviewContrast").value = settings.contrast;
+    $("#reviewHue").value = settings.hue;
     $("#reviewBrightnessLabel").textContent = String(settings.brightness);
     $("#reviewContrastLabel").textContent = `${settings.contrast}%`;
+    $("#reviewHueLabel").textContent = `${settings.hue}°`;
     updateCssPreview(capturePreviewCanvas);
     updateCssPreview($("#reviewCanvas"));
     state.capturePreviewKey = "";
@@ -531,6 +599,7 @@
   function changeLivePreviewMode(mode) {
     const settings = state.livePreviewAdjustments;
     settings.mode = mode === "bw" ? "bw" : "color";
+    settings.desaturate = settings.mode === "bw";
     settings.curves = defaultAdjustments(settings.mode).curves;
     settings.gamma = defaultAdjustments(settings.mode).gamma;
     $("#capturePreviewMode").value = settings.mode;
@@ -539,7 +608,7 @@
     updateCapturePreviewFilter();
   }
 
-  ["captureBrightness", "captureContrast"].forEach((id) => {
+  ["captureBrightness", "captureContrast", "captureHue"].forEach((id) => {
     $("#" + id).addEventListener("input", updateCapturePreviewFilter);
   });
   $("#captureNegativeToggle").addEventListener("change", updateCapturePreviewFilter);
@@ -552,6 +621,10 @@
   });
   $("#reviewContrast").addEventListener("input", () => {
     $("#captureContrast").value = $("#reviewContrast").value;
+    updateCapturePreviewFilter();
+  });
+  $("#reviewHue").addEventListener("input", () => {
+    $("#captureHue").value = $("#reviewHue").value;
     updateCapturePreviewFilter();
   });
   updateCapturePreviewFilter();
@@ -829,8 +902,30 @@
     document.querySelectorAll("[data-curve-channel][data-curve-scope]").forEach((canvas) => {
       const processEditor = canvas.dataset.curveScope === "process";
       const settings = processEditor ? getAdjustmentSettings() : state.livePreviewAdjustments;
-      const histogram = processEditor ? state.previewHistogram?.[canvas.dataset.curveChannel] : null;
+      const channel = canvas.dataset.curveChannel;
+      const histogram = processEditor ? state.previewHistogram?.[channel] : null;
       drawCurveEditor(canvas, settings, histogram);
+      const editor = canvas.closest(".curve-editor");
+      editor.querySelector("[data-curve-title]").textContent = channel === "white" ? "Master (W) curve" : `${channel} curve`;
+      editor.querySelectorAll("[data-curve-select]").forEach((button) => {
+        const selected = button.dataset.curveSelect === channel;
+        button.setAttribute("aria-pressed", String(selected));
+        button.classList.toggle("active", selected);
+      });
+      const levels = editor.querySelector("[data-level-controls]");
+      levels.hidden = channel === "white";
+      if (channel !== "white") {
+        const range = workingRange(settings.levels[channel], processEditor ? $("#invertToggle").checked : true);
+        levels.querySelector(".levels-label").textContent = `${channel} input range`;
+        const minimum = levels.querySelector('[data-level-bound="min"]');
+        const maximum = levels.querySelector('[data-level-bound="max"]');
+        minimum.dataset.levelChannel = channel;
+        maximum.dataset.levelChannel = channel;
+        minimum.setAttribute("aria-label", `${channel} minimum`);
+        maximum.setAttribute("aria-label", `${channel} maximum`);
+        minimum.value = range.min;
+        maximum.value = range.max;
+      }
     });
   }
 
@@ -846,9 +941,8 @@
 
   function bindCurveEditor(canvas, getSettings, onChange) {
     let draggingPoint = -1;
-    const channel = canvas.dataset.curveChannel;
     function getPoints() {
-      return getSettings().curves[channel];
+      return getSettings().curves[canvas.dataset.curveChannel];
     }
     function pointIndexAt(point, points) {
       const rect = canvas.getBoundingClientRect();
@@ -910,13 +1004,38 @@
   }
 
   function createCurveEditors(container, scope, getSettings, onChange) {
-    container.innerHTML = `<div class="curve-editors">${curveChannels.map((channel) =>
-      `<div class="curve-editor"><div class="curve-editor-title">${channel === "white" ? "Master (W)" : channel} curve` +
-      `<span class="subtle">Input → output</span></div><canvas width="320" height="320" data-curve-scope="${scope}" data-curve-channel="${channel}" aria-label="${channel} tone curve editor"></canvas></div>`
-    ).join("")}</div>`;
-    container.querySelectorAll("[data-curve-channel]").forEach((canvas) =>
-      bindCurveEditor(canvas, getSettings, onChange)
-    );
+    container.innerHTML = `<div class="curve-editors"><div class="curve-editor">` +
+      `<div class="curve-editor-title"><span data-curve-title>red curve</span><span class="subtle">Input → output</span></div>` +
+      `<div class="curve-channel-buttons" role="group" aria-label="Select tone curve">` +
+      `<button class="curve-channel-button active" type="button" data-curve-select="red" aria-label="Red curve" aria-pressed="true">R</button>` +
+      `<button class="curve-channel-button" type="button" data-curve-select="green" aria-label="Green curve" aria-pressed="false">G</button>` +
+      `<button class="curve-channel-button" type="button" data-curve-select="blue" aria-label="Blue curve" aria-pressed="false">B</button>` +
+      `<button class="curve-channel-button" type="button" data-curve-select="white" aria-label="White curve" aria-pressed="false">W</button></div>` +
+      `<canvas width="320" height="320" data-curve-scope="${scope}" data-curve-channel="red" aria-label="Red tone curve editor"></canvas>` +
+      `<div class="levels-row" data-level-controls><span class="levels-label">red input range</span>` +
+      `<label>Min <input type="number" min="0" max="254" step="1" class="field-select" data-level-channel="red" data-level-bound="min" aria-label="red minimum"></label>` +
+      `<label>Max <input type="number" min="1" max="255" step="1" class="field-select" data-level-channel="red" data-level-bound="max" aria-label="red maximum"></label></div></div></div>`;
+    const canvas = container.querySelector("[data-curve-channel]");
+    bindCurveEditor(canvas, getSettings, onChange);
+    container.querySelectorAll("[data-curve-select]").forEach((button) => {
+      button.addEventListener("click", () => {
+        canvas.dataset.curveChannel = button.dataset.curveSelect;
+        canvas.setAttribute("aria-label", `${button.getAttribute("aria-label")} tone curve editor`);
+        drawCurveEditors();
+      });
+    });
+    if (scope !== "process") {
+      container.addEventListener("change", (event) => {
+        const input = event.target.closest("[data-level-channel]");
+        if (!input) return;
+        const channel = input.dataset.levelChannel;
+        const field = (bound) => container.querySelector(`[data-level-channel="${channel}"][data-level-bound="${bound}"]`);
+        const low = clamp(Math.round(Number(field("min").value) || 0), 0, 254);
+        const high = clamp(Math.round(Number(field("max").value) || 255), low + 1, 255);
+        getSettings().levels[channel] = { min: 255 - high, max: 255 - low };
+        onChange();
+      });
+    }
   }
 
   function histogramFor(imageData, invert, settings) {
@@ -955,20 +1074,14 @@
     const currentSettings = previewShot?.adjustments
       ? previewShot.adjustments
       : roll.adjustments;
-    $("#processMode").value = currentSettings.mode;
+    $("#desaturateToggle").checked = Boolean(currentSettings.desaturate);
     $("#gammaSelect").value = currentSettings.gamma;
     document.querySelectorAll("[data-adjustment-key]").forEach((input) => {
       input.value = currentSettings[input.dataset.adjustmentKey];
       const valueLabel = input.parentElement.querySelector("[data-adjustment-value]");
-      valueLabel.textContent = `${input.value}${input.dataset.adjustmentKey === "contrast" ? "%" : ""}`;
+      valueLabel.textContent = `${input.value}${input.dataset.adjustmentKey === "contrast" ? "%" : input.dataset.adjustmentKey === "hue" ? "°" : ""}`;
     });
     drawCurveEditors();
-    const invertLevels = $("#invertToggle").checked;
-    rgbChannels.forEach((channel) => {
-      const range = workingRange(currentSettings.levels[channel], invertLevels);
-      $(`[data-level-channel="${channel}"][data-level-bound="min"]`).value = range.min;
-      $(`[data-level-channel="${channel}"][data-level-bound="max"]`).value = range.max;
-    });
     $("#processSummary").textContent = `${roll.shots.length} shot(s) in Roll ${roll.number}. Roll-wide adjustments apply to each shot unless that shot has its own settings.`;
   }
   function makePreviewKey(roll, shot) {
@@ -1184,11 +1297,7 @@
       `<label class="block py-3 text-xs">${label} <span class="badge ml-2" data-adjustment-value></span>` +
       `<input class="mt-2 w-full" type="range" min="${min}" max="${max}" step="${step}" value="${defaultAdjustments()[key]}" data-adjustment-key="${key}" aria-label="${label}"></label>`
     ).join("");
-    container.innerHTML = `<div id="processCurveEditors"></div><div class="levels-controls">${rgbChannels.map((channel) =>
-      `<div class="levels-row"><span class="levels-label">${channel} range</span>` +
-      `<label>Min <input type="number" min="0" max="254" step="1" class="field-select" data-level-channel="${channel}" data-level-bound="min" aria-label="${channel} minimum"></label>` +
-      `<label>Max <input type="number" min="1" max="255" step="1" class="field-select" data-level-channel="${channel}" data-level-bound="max" aria-label="${channel} maximum"></label></div>`
-    ).join("")}</div><div class="adjustment-sliders">${sliders}</div>`;
+    container.innerHTML = `<div id="processCurveEditors"></div><div class="adjustment-sliders">${sliders}</div>`;
     createCurveEditors(
       $("#processCurveEditors"),
       "process",
@@ -1214,7 +1323,7 @@
       const settings = activeAdjustmentSettings();
       settings[input.dataset.adjustmentKey] = Number(input.value);
       const valueLabel = input.parentElement.querySelector("[data-adjustment-value]");
-      valueLabel.textContent = `${input.value}${input.dataset.adjustmentKey === "contrast" ? "%" : ""}`;
+      valueLabel.textContent = `${input.value}${input.dataset.adjustmentKey === "contrast" ? "%" : input.dataset.adjustmentKey === "hue" ? "°" : ""}`;
       queueProcessPreview();
     });
   }
@@ -1302,11 +1411,8 @@
     updateProcessState();
     queueProcessPreview();
   });
-  $("#processMode").addEventListener("change", (event) => {
-    const settings = activeAdjustmentSettings();
-    settings.mode = event.target.value === "bw" ? "bw" : "color";
-    settings.curves = defaultAdjustments(settings.mode).curves;
-    settings.gamma = defaultAdjustments(settings.mode).gamma;
+  $("#desaturateToggle").addEventListener("change", (event) => {
+    activeAdjustmentSettings().desaturate = event.target.checked;
     updateProcessState();
     queueProcessPreview();
   });
@@ -1329,9 +1435,11 @@
       format: PROFILE_FORMAT,
       version: 1,
       mode: normalized.mode,
+      desaturate: normalized.desaturate,
       gamma: normalized.gamma,
       brightness: normalized.brightness,
       contrast: normalized.contrast,
+      hue: normalized.hue,
       tint: normalized.tint,
       levels: normalized.levels,
       curves: normalized.curves
@@ -1354,6 +1462,7 @@
       return valid.length >= 2 ? valid : fallback;
     };
     const mode = profile.mode === "bw" ? "bw" : "color";
+    const desaturate = typeof profile.desaturate === "boolean" ? profile.desaturate : mode === "bw";
     const defaults = defaultAdjustments(mode);
     const levels = cloneLevels(profile.levels);
     rgbChannels.forEach((channel) => {
@@ -1362,9 +1471,11 @@
     });
     return {
       mode,
+      desaturate,
       gamma: ["srgb", "2.2", "off"].includes(profile.gamma) ? profile.gamma : defaults.gamma,
       brightness: number(profile.brightness, 0, -100, 100),
       contrast: number(profile.contrast, 100, 0, 200),
+      hue: number(profile.hue, 0, -180, 180),
       tint: number(profile.tint, 0, -100, 100),
       curvePresetVersion: 4,
       levels,
@@ -1386,10 +1497,12 @@
       queueProcessPreview();
     } else {
       Object.assign(state.livePreviewAdjustments, loaded);
+      state.livePreviewAdjustments.mode = loaded.desaturate ? "bw" : "color";
       $("#captureBrightness").value = loaded.brightness;
       $("#captureContrast").value = loaded.contrast;
-      $("#capturePreviewMode").value = loaded.mode;
-      $("#reviewPreviewMode").value = loaded.mode;
+      $("#captureHue").value = loaded.hue;
+      $("#capturePreviewMode").value = state.livePreviewAdjustments.mode;
+      $("#reviewPreviewMode").value = state.livePreviewAdjustments.mode;
       updateCapturePreviewFilter();
       drawCurveEditors();
     }
@@ -1416,10 +1529,25 @@
     }
   });
 
+  let openCVUnavailable = false;
   function initializeOpenCV() {
+    if (openCVUnavailable) return;
     if (typeof cv === "undefined") { setTimeout(initializeOpenCV, 250); return; }
     if (cv.Mat) { onOpenCVReady(); return; }
     cv.onRuntimeInitialized = onOpenCVReady;
+  }
+  const openCVReady = window.NegativeLabDependencies?.openCVReady;
+  if (openCVReady) openCVReady.then((available) => {
+    if (available || state.cvReady) return;
+    openCVUnavailable = true;
+    $("#cvStatus").textContent = "OpenCV unavailable";
+    $("#captureStatus").textContent = "Image processing is unavailable; check the dependency warning.";
+    notify("OpenCV.js could not load from the CDN or local fallback.", true);
+  });
+  else {
+    openCVUnavailable = true;
+    $("#cvStatus").textContent = "Dependency loader unavailable";
+    notify("The CDN dependency loader could not start.", true);
   }
   function onOpenCVReady() {
     if (state.cvReady) return;

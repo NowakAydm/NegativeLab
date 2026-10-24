@@ -122,6 +122,9 @@
       const shot = activeShot();
       $("#reviewEmpty").classList.toggle("hidden", Boolean(shot));
       $("#reviewContent").classList.toggle("hidden", !shot);
+      $("#reviewNegativeToggle").disabled = !shot;
+      if (!shot) $("#reviewNegativeToggle").checked = false;
+      $("#reviewCorrectionBody").classList.toggle("hidden", !shot || !$("#reviewNegativeToggle").checked);
       updatePreviewFilter();
       $("#previousShotButton").disabled = !shot || activeRoll().shots.length < 2;
       $("#nextShotButton").disabled = !shot || activeRoll().shots.length < 2;
@@ -483,8 +486,6 @@
       renderReview();
       renderFilmList();
     });
-    $("#reviewBackButton").addEventListener("click", () => setMode("capture"));
-    $("#toProcessButton").addEventListener("click", () => setMode("process"));
     $("#processBackButton").addEventListener("click", () => setMode("review"));
     window.addEventListener("resize", () => { if (state.mode === "review") drawReview(); });
 

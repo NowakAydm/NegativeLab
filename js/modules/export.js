@@ -95,7 +95,7 @@
       const rolls = state.rolls.filter((roll) => roll.shots.length);
       const totalShots = rolls.reduce((total, roll) => total + roll.shots.length, 0);
       if (!totalShots) { notify("There are no captured frames to export.", true); return; }
-      const includeRaw = $("#rawExportToggle").checked;
+      const includeRaw = $("#rawExportToggle").getAttribute("aria-pressed") === "true";
       const totalFiles = totalShots * (includeRaw ? 2 : 1);
       const exportButton = $("#exportButton");
       const zipButton = $("#exportZipButton");
@@ -136,7 +136,7 @@
                 }
               });
               const name = `${prefix}Shot_${pad(shot.number)}.png`;
-              if (asZip) files.push({ name: `${rollFolder}/${name}`, blob });
+              if (asZip) files.push({ name: `${rollFolder}/${raw ? "negatives/" : ""}${name}`, blob });
               else if (rollDirectory) {
                 const handle = await rollDirectory.getFileHandle(name, { create: true });
                 const writable = await handle.createWritable();
@@ -178,8 +178,11 @@
 
     $("#exportButton").addEventListener("click", () => exportRoll(false));
     $("#exportZipButton").addEventListener("click", () => exportRoll(true));
-    $("#rawExportToggle").addEventListener("change", () => {
-      $("#exportStatus").textContent = $("#rawExportToggle").checked
+    $("#rawExportToggle").addEventListener("click", () => {
+      const toggle = $("#rawExportToggle");
+      const includeRaw = toggle.getAttribute("aria-pressed") !== "true";
+      toggle.setAttribute("aria-pressed", String(includeRaw));
+      $("#exportStatus").textContent = includeRaw
         ? "Processed positives and raw negatives will be exported."
         : "Processed positives will be exported.";
     });

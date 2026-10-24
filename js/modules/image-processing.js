@@ -136,22 +136,58 @@
       return lut[lower] + (lut[upper] - lut[lower]) * (input - lower);
     }
 
+    function rotateHue(red, green, blue, degrees) {
+      if (!degrees) return [red, green, blue];
+      const maximum = Math.max(red, green, blue);
+      const minimum = Math.min(red, green, blue);
+      const delta = maximum - minimum;
+      if (!delta) return [red, green, blue];
+      let hue = maximum === red
+        ? ((green - blue) / delta) % 6
+        : maximum === green
+          ? (blue - red) / delta + 2
+          : (red - green) / delta + 4;
+      hue = ((hue / 6 + degrees / 360) % 1 + 1) % 1;
+      const saturation = maximum === 0 ? 0 : delta / maximum;
+      const value = maximum;
+      const sector = hue * 6;
+      const chroma = value * saturation;
+      const secondary = chroma * (1 - Math.abs(sector % 2 - 1));
+      const offset = value - chroma;
+      const [first, second, third] = sector < 1 ? [chroma, secondary, 0]
+        : sector < 2 ? [secondary, chroma, 0]
+          : sector < 3 ? [0, chroma, secondary]
+            : sector < 4 ? [0, secondary, chroma]
+              : sector < 5 ? [secondary, 0, chroma]
+                : [chroma, 0, secondary];
+      return [first + offset, second + offset, third + offset];
+    }
+
     function applyPixel(data, index, imageAdjustments, luts, source = data) {
       const red = lookup(luts.red, source[index]);
       const green = lookup(luts.green, source[index + 1]);
       const blue = lookup(luts.blue, source[index + 2]);
       const inputLuminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
       const outputLuminance = evaluateMaster(luts.master, inputLuminance);
-      if (imageAdjustments.mode === "bw") {
-        const luminance = encodeLinearValue(luts.gamma, outputLuminance);
+      const scale = inputLuminance > 0 ? outputLuminance / inputLuminance : 0;
+      const [hueRed, hueGreen, hueBlue] = rotateHue(
+        inputLuminance > 0 ? red * scale : outputLuminance,
+        inputLuminance > 0 ? green * scale : outputLuminance,
+        inputLuminance > 0 ? blue * scale : outputLuminance,
+        Number(imageAdjustments.hue) || 0
+      );
+      const outputRed = encodeLinearValue(luts.gamma, hueRed);
+      const outputGreen = encodeLinearValue(luts.gamma, hueGreen);
+      const outputBlue = encodeLinearValue(luts.gamma, hueBlue);
+      if (imageAdjustments.desaturate) {
+        const luminance = Math.round(outputRed * 0.2126 + outputGreen * 0.7152 + outputBlue * 0.0722);
         data[index] = luminance;
         data[index + 1] = luminance;
         data[index + 2] = luminance;
       } else {
-        const scale = inputLuminance > 0 ? outputLuminance / inputLuminance : 0;
-        data[index] = encodeLinearValue(luts.gamma, inputLuminance > 0 ? red * scale : outputLuminance);
-        data[index + 1] = encodeLinearValue(luts.gamma, inputLuminance > 0 ? green * scale : outputLuminance);
-        data[index + 2] = encodeLinearValue(luts.gamma, inputLuminance > 0 ? blue * scale : outputLuminance);
+        data[index] = outputRed;
+        data[index + 1] = outputGreen;
+        data[index + 2] = outputBlue;
       }
     }
 
