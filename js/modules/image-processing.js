@@ -44,20 +44,60 @@
         : Math.pow((encoded + 0.055) / 1.055, 2.4);
     }
 
-    // Z-Log2 -> scene linear (community-fitted curve, normalized so 18% gray lands near 0.18).
-    function zlog2ToLinear(x) {
-      const cut = 0.12658, a = 0.01579, b = 150, c = 1.0543, d = 139.73, gain = 13.5;
-      const logPart = (value) => (Math.pow(b, value * c) - a) / d;
-      // The linear toe's slope is derived so both segments meet at the cut (no jump in the shadows).
-      return (x < cut ? x * (logPart(cut) / cut) : logPart(x)) * gain;
+    const zlog2Curve = {
+      a: 249.77914428710938,
+      b: 0.9484496712684631,
+      c: 0.3455176055431366,
+      d: 0.1709400862455368,
+      e: 1.3393715620040894,
+      f: -0.06127290427684784,
+      cut: -0.0652475655078888
+    };
+    let zlog2Encoder = null;
+
+    // Reverse-engineered Z-Log2 curve only; the DCTL's optional gain and gamut transforms are separate.
+    function zlog2ToLinear(encoded) {
+      return encoded > zlog2Curve.e * zlog2Curve.cut + zlog2Curve.f
+        ? (Math.pow(10, (encoded - zlog2Curve.d) / zlog2Curve.c) - zlog2Curve.b) / zlog2Curve.a
+        : (encoded - zlog2Curve.f) / zlog2Curve.e;
     }
 
-    function decodeToLinear(encoded) {
-      return $("#zlog2Toggle")?.checked ? zlog2ToLinear(encoded) : srgbToLinear(encoded);
+    const zlog2MinimumLinear = zlog2ToLinear(0);
+    const zlog2MaximumLinear = zlog2ToLinear(1);
+    const zlog2LinearRange = zlog2MaximumLinear - zlog2MinimumLinear;
+    const zlog2InvertSum = zlog2MinimumLinear + zlog2MaximumLinear;
+
+    function linearToZlog2(linear) {
+      const encoded = linear > zlog2Curve.cut
+        ? zlog2Curve.c * Math.log10(zlog2Curve.a * linear + zlog2Curve.b) + zlog2Curve.d
+        : zlog2Curve.e * linear + zlog2Curve.f;
+      return clamp(encoded, 0, 1);
     }
 
-    function rawToLinear(value, invert) {
-      return decodeToLinear((invert ? 255 - value : value) / 255);
+    function getZlog2Encoder() {
+      if (!zlog2Encoder) {
+        const values = new Uint8Array(65536);
+        for (let index = 0; index < values.length; index++) {
+          const linear = zlog2MinimumLinear + index / (values.length - 1) * zlog2LinearRange;
+          values[index] = Math.round(linearToZlog2(linear) * 255);
+        }
+        zlog2Encoder = {
+          minimumLinear: zlog2MinimumLinear,
+          maximumLinear: zlog2MaximumLinear,
+          linearRange: zlog2LinearRange,
+          invertSum: zlog2InvertSum,
+          values
+        };
+      }
+      return zlog2Encoder;
+    }
+
+    function rawToLinear(value, invert, decodeZlog2 = $("#zlog2Toggle")?.checked) {
+      if (decodeZlog2) {
+        const decoded = zlog2ToLinear(value / 255);
+        return invert ? zlog2InvertSum - decoded : decoded;
+      }
+      return srgbToLinear((invert ? 255 - value : value) / 255);
     }
 
     // Levels are stored as the raw scan range; this returns the same range in the (optionally inverted) working domain.
@@ -69,7 +109,7 @@
 
     // Pipeline per channel: invert -> decode to linear -> normalize to the roll's min/max ->
     // brightness/contrast (pivot at the middle of the range) -> curve over the normalized range.
-    function buildCurveInputLuts(imageAdjustments, invert) {
+    function buildCurveInputLuts(imageAdjustments, invert, decodeZlog2 = $("#zlog2Toggle")?.checked) {
       const contrast = Number(imageAdjustments.contrast) / 100;
       const brightness = Number(imageAdjustments.brightness) / 255;
       const tint = Number(imageAdjustments.tint) / 255;
@@ -85,11 +125,22 @@
       };
       const tintOffsets = { red: tint, green: -tint, blue: tint };
       for (const channel of ["red", "green", "blue"]) {
+        const rawMin = clamp(Number(levels[channel]?.min ?? 0), 0, 255);
+        const rawMax = clamp(Number(levels[channel]?.max ?? 255), 0, 255);
         const range = workingRange(levels[channel], invert);
-        const low = decodeToLinear(range.min / 255);
-        const span = Math.max(decodeToLinear(range.max / 255) - low, 0.0001);
+        const low = decodeZlog2
+          ? invert
+            ? zlog2InvertSum - zlog2ToLinear(rawMax / 255)
+            : zlog2ToLinear(rawMin / 255)
+          : srgbToLinear(range.min / 255);
+        const high = decodeZlog2
+          ? invert
+            ? zlog2InvertSum - zlog2ToLinear(rawMin / 255)
+            : zlog2ToLinear(rawMax / 255)
+          : srgbToLinear(range.max / 255);
+        const span = Math.max(high - low, 0.0001);
         for (let value = 0; value < 256; value++) {
-          const normalized = (rawToLinear(value, invert) - low) / span;
+          const normalized = (rawToLinear(value, invert, decodeZlog2) - low) / span;
           const adjusted = clamp((normalized - 0.5) * contrast + 0.5 + brightness + tintOffsets[channel], 0, 1);
           channels[`${channel}Input`][value] = adjusted * 255;
           channels[channel][value] = curveValue(curves[channel], adjusted) * 255;
@@ -98,26 +149,60 @@
       return channels;
     }
 
-    function buildAdjustmentLuts(imageAdjustments, invert) {
-      const curveInputs = buildCurveInputLuts(imageAdjustments, invert);
-      const gamma = getGammaLut(imageAdjustments.gamma);
-      const master = new Float32Array(256);
+    function buildLinearCurveInputLuts(imageAdjustments, invert) {
+      const contrast = Number(imageAdjustments.contrast) / 100;
+      const brightness = Number(imageAdjustments.brightness) / 255;
+      const tint = Number(imageAdjustments.tint) / 255;
+      const curves = imageAdjustments.curves || {};
+      const levels = imageAdjustments.levels || {};
       const channels = {
-        red: new Float32Array(256),
-        green: new Float32Array(256),
-        blue: new Float32Array(256)
+        red: new Float32Array(65536),
+        green: new Float32Array(65536),
+        blue: new Float32Array(65536)
       };
-      for (let value = 0; value < 256; value++) {
-        master[value] = curveValue(imageAdjustments.curves?.white, value / 255) * 255;
-        for (const channel of ["red", "green", "blue"]) {
-          channels[channel][value] = curveInputs[channel][value];
+      const tintOffsets = { red: tint, green: -tint, blue: tint };
+      for (const channel of ["red", "green", "blue"]) {
+        const rawMin = clamp(Number(levels[channel]?.min ?? 0), 0, 255);
+        const rawMax = clamp(Number(levels[channel]?.max ?? 255), 0, 255);
+        const rawLow = zlog2ToLinear(rawMin / 255);
+        const rawHigh = zlog2ToLinear(rawMax / 255);
+        const low = invert ? zlog2InvertSum - rawHigh : rawLow;
+        const high = invert ? zlog2InvertSum - rawLow : rawHigh;
+        const span = Math.max(high - low, 0.0001);
+        for (let value = 0; value < 65536; value++) {
+          const linear = zlog2MinimumLinear + value / 65535 * zlog2LinearRange;
+          const working = invert ? zlog2InvertSum - linear : linear;
+          const normalized = (working - low) / span;
+          const adjusted = clamp((normalized - 0.5) * contrast + 0.5 + brightness + tintOffsets[channel], 0, 1);
+          channels[channel][value] = curveValue(curves[channel], adjusted) * 255;
         }
       }
+      return channels;
+    }
+
+    function buildOutputLuts(imageAdjustments, curveInputs) {
+      const gamma = getGammaLut(imageAdjustments.gamma);
+      const master = new Float32Array(256);
+      const channels = Object.fromEntries(["red", "green", "blue"].map((channel) =>
+        [channel, new Float32Array(curveInputs[channel].length)]
+      ));
+      for (let value = 0; value < 256; value++) {
+        master[value] = curveValue(imageAdjustments.curves?.white, value / 255) * 255;
+      }
+      for (const channel of ["red", "green", "blue"]) channels[channel].set(curveInputs[channel]);
       return { ...channels, gamma, master };
     }
 
-    function buildCssPreviewTables(imageAdjustments, invert) {
-      const luts = buildAdjustmentLuts(imageAdjustments, invert);
+    function buildAdjustmentLuts(imageAdjustments, invert, decodeZlog2 = $("#zlog2Toggle")?.checked) {
+      return buildOutputLuts(imageAdjustments, buildCurveInputLuts(imageAdjustments, invert, decodeZlog2));
+    }
+
+    function buildLinearAdjustmentLuts(imageAdjustments, invert) {
+      return buildOutputLuts(imageAdjustments, buildLinearCurveInputLuts(imageAdjustments, invert));
+    }
+
+    function buildCssPreviewTables(imageAdjustments, invert, decodeZlog2 = $("#zlog2Toggle")?.checked) {
+      const luts = buildAdjustmentLuts(imageAdjustments, invert, decodeZlog2);
       return Object.fromEntries(["red", "green", "blue"].map((channel) => {
         const table = new Array(256);
         for (let value = 0; value < 256; value++) {
@@ -177,10 +262,7 @@
       return [first + offset, second + offset, third + offset];
     }
 
-    function applyPixel(data, index, imageAdjustments, luts, source = data) {
-      const red = lookup(luts.red, source[index]);
-      const green = lookup(luts.green, source[index + 1]);
-      const blue = lookup(luts.blue, source[index + 2]);
+    function writeProcessedPixel(data, index, imageAdjustments, luts, red, green, blue) {
       const inputLuminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
       const outputLuminance = evaluateMaster(luts.master, inputLuminance);
       const scale = inputLuminance > 0 ? outputLuminance / inputLuminance : 0;
@@ -205,15 +287,27 @@
       }
     }
 
-    function applyAdjustmentsSync(data, imageAdjustments, invert = true) {
-      const luts = buildAdjustmentLuts(imageAdjustments, invert);
+    function applyPixel(data, index, imageAdjustments, luts, source = data) {
+      writeProcessedPixel(
+        data,
+        index,
+        imageAdjustments,
+        luts,
+        lookup(luts.red, source[index]),
+        lookup(luts.green, source[index + 1]),
+        lookup(luts.blue, source[index + 2])
+      );
+    }
+
+    function applyAdjustmentsSync(data, imageAdjustments, invert = true, decodeZlog2 = $("#zlog2Toggle")?.checked) {
+      const luts = buildAdjustmentLuts(imageAdjustments, invert, decodeZlog2);
       for (let index = 0; index < data.length; index += 4) {
         applyPixel(data, index, imageAdjustments, luts);
       }
     }
 
-    async function applyAdjustments(data, imageAdjustments, invert, onProgress = () => {}, source = data, shouldCancel = () => false) {
-      const luts = buildAdjustmentLuts(imageAdjustments, invert);
+    async function applyAdjustments(data, imageAdjustments, invert, onProgress = () => {}, source = data, shouldCancel = () => false, decodeZlog2 = $("#zlog2Toggle")?.checked) {
+      const luts = buildAdjustmentLuts(imageAdjustments, invert, decodeZlog2);
       for (let index = 0; index < data.length; index += 4) {
         if (index && index % 262144 === 0) {
           if (shouldCancel()) return false;
@@ -225,6 +319,42 @@
       if (shouldCancel()) return false;
       onProgress(100);
       return true;
+    }
+
+    async function applyLinearAdjustments(source, imageAdjustments, invert, onProgress = () => {}) {
+      const luts = buildLinearAdjustmentLuts(imageAdjustments, invert);
+      const pixelCount = source.length / 3;
+      const output = new Uint8ClampedArray(pixelCount * 4);
+      for (let sourceIndex = 0, targetIndex = 0; sourceIndex < source.length; sourceIndex += 3, targetIndex += 4) {
+        if (sourceIndex && sourceIndex % 196608 === 0) {
+          onProgress(sourceIndex / source.length * 100);
+          await yieldToBrowser();
+        }
+        writeProcessedPixel(
+          output,
+          targetIndex,
+          imageAdjustments,
+          luts,
+          luts.red[source[sourceIndex]],
+          luts.green[source[sourceIndex + 1]],
+          luts.blue[source[sourceIndex + 2]]
+        );
+        output[targetIndex + 3] = 255;
+      }
+      onProgress(100);
+      return output;
+    }
+
+    function linear16ToZlog2Rgba(source) {
+      const encoder = getZlog2Encoder().values;
+      const output = new Uint8ClampedArray(source.length / 3 * 4);
+      for (let sourceIndex = 0, targetIndex = 0; sourceIndex < source.length; sourceIndex += 3, targetIndex += 4) {
+        output[targetIndex] = encoder[source[sourceIndex]];
+        output[targetIndex + 1] = encoder[source[sourceIndex + 1]];
+        output[targetIndex + 2] = encoder[source[sourceIndex + 2]];
+        output[targetIndex + 3] = 255;
+      }
+      return output;
     }
 
     async function processShot(shot, { raw = false, preview = false, adjustments = null, onProgress = () => {} } = {}) {
@@ -241,11 +371,14 @@
       let transform = null;
       let warped = null;
       let flipped = null;
+      let linearOutput = null;
+      const linearShot = shot.pixelEncoding === "linear16-zlog2";
       try {
         onProgress({ stage: "Cropping and straightening", current: 0, total: 1, percent: 5 });
         await yieldToBrowser();
-        source = new cv.Mat(shot.height, shot.width, cv.CV_8UC4);
-        source.data.set(shot.pixels);
+        source = new cv.Mat(shot.height, shot.width, linearShot ? cv.CV_16UC3 : cv.CV_8UC4);
+        if (linearShot) source.data16U.set(shot.pixels);
+        else source.data.set(shot.pixels);
         sourcePoints = cv.matFromArray(4, 1, cv.CV_32FC2, corners.flatMap(({ x, y }) => [x, y]));
         transform = cv.getPerspectiveTransform(sourcePoints, destination);
         warped = new cv.Mat();
@@ -256,7 +389,25 @@
         onProgress({ stage: "Applying curves and output transform", current: 1, total: 1, percent: 15 });
         await yieldToBrowser();
         const invert = !raw && ($("#invertToggle")?.checked ?? true);
-        if (!raw) {
+        let final = warped;
+        if (linearShot) {
+          const imageAdjustments = adjustments || {
+            mode: "color", brightness: 0, contrast: 100, tint: 0, gamma: "srgb", curves: {}
+          };
+          const output = raw
+            ? linear16ToZlog2Rgba(warped.data16U)
+            : await applyLinearAdjustments(warped.data16U, imageAdjustments, invert, (percent) => onProgress({
+              stage: "Applying curves and output transform",
+              current: 1,
+              total: 1,
+              percent: 15 + percent * 0.8
+            }));
+          linearOutput = new cv.Mat(outputHeight, outputWidth, cv.CV_8UC4);
+          linearOutput.data.set(output);
+          warped.delete();
+          warped = null;
+          final = linearOutput;
+        } else if (!raw) {
           const imageAdjustments = adjustments || {
             mode: "color", brightness: 0, contrast: 100, tint: 0, gamma: "srgb", curves: {}
           };
@@ -268,10 +419,9 @@
           }));
           for (let index = 3; index < warped.data.length; index += 4) warped.data[index] = 255;
         }
-        let final = warped;
         if (shot.flipX || shot.flipY) {
           flipped = new cv.Mat();
-          cv.flip(warped, flipped, shot.flipX && shot.flipY ? -1 : shot.flipX ? 1 : 0);
+          cv.flip(final, flipped, shot.flipX && shot.flipY ? -1 : shot.flipX ? 1 : 0);
           final = flipped;
         }
         const result = document.createElement("canvas");
@@ -294,12 +444,15 @@
         transform?.delete();
         warped?.delete();
         flipped?.delete();
+        linearOutput?.delete();
       }
     }
 
     return {
-      processShot, applyAdjustments, applyAdjustmentsSync, buildAdjustmentLuts,
-      buildCssPreviewTables, buildCurveInputLuts, rawToLinear, workingRange
+      processShot, applyAdjustments, applyAdjustmentsSync, applyLinearAdjustments,
+      buildAdjustmentLuts, buildLinearAdjustmentLuts, buildCssPreviewTables,
+      buildCurveInputLuts, rawToLinear, workingRange, zlog2ToLinear,
+      linearToZlog2, getZlog2Encoder, linear16ToZlog2Rgba
     };
   };
 })();

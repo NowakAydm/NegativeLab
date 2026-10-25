@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  window.NegativeLabReview = function createReview({ state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail, updatePreviewFilter, applyPreviewAdjustments }) {
+  window.NegativeLabReview = function createReview({ state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail, pixelsForDisplay, updatePreviewFilter, applyPreviewAdjustments }) {
     const canvas = $("#reviewCanvas");
     const context = canvas.getContext("2d");
     const sourceCanvas = document.createElement("canvas");
@@ -241,7 +241,7 @@
           sourceCanvas.width = shot.width;
           sourceCanvas.height = shot.height;
         }
-        sourceCanvas.getContext("2d", { willReadFrequently: true }).putImageData(new ImageData(shot.pixels, shot.width, shot.height), 0, 0);
+        sourceCanvas.getContext("2d", { willReadFrequently: true }).putImageData(new ImageData(pixelsForDisplay(shot), shot.width, shot.height), 0, 0);
         sourceShot = shot;
       }
       context.fillStyle = "#080a09";
@@ -259,7 +259,7 @@
           const previewContext = processedPreviewCanvas.getContext("2d", { willReadFrequently: true });
           previewContext.drawImage(sourceCanvas, 0, 0, previewWidth, previewHeight);
           const previewImage = previewContext.getImageData(0, 0, previewWidth, previewHeight);
-          applyPreviewAdjustments(previewImage.data);
+          applyPreviewAdjustments(previewImage.data, shot);
           previewContext.putImageData(previewImage, 0, 0);
           processedPreviewShot = shot;
           processedPreviewKey = previewKey;

@@ -20,7 +20,7 @@ Allow camera access when prompted. Capture can begin as soon as the camera is re
 1. **Setup**
    - Start the camera and choose a video source and resolution. If the requested resolution is unavailable, the app tries lower resolutions and reports the actual stream size.
    - Place the negative and its light source in view.
-   - Optionally enable **Decode Z-Log2 input** for Z CAM Z-Log2 footage. This affects image processing, not the capture and crop previews.
+   - Optionally enable **Decode Z-Log2 input** for Z CAM Z-Log2 footage. The decoder uses the reverse-engineered [Z-Log2 curve](https://github.com/thatcherfreeman/zlog-curve/blob/master/dctl/zlog2_to_linear.dctl); multi-frame bursts are averaged and stored as 16-bit linear RGB.
    - Choose from 1 to 16 frames per burst.
 2. **Capture**
    - Press **Capture burst** or the Space key. Captured frames use a default inset crop that you can adjust manually in Crop.
@@ -35,7 +35,7 @@ Allow camera access when prompted. Capture can begin as soon as the camera is re
    - Levels are not scanned automatically. Use **Auto levels** to measure ranges from the selected shot only.
    - Use **Pick white** or **Pick black**, then click the matching point in the cropped preview to set its RGB level endpoints from the original crop pixels.
    - Choose whether to invert the negative, desaturate the final output for black-and-white rolls, and select the output gamma.
-   - Frames in a burst are averaged as they are captured, so each shot keeps one averaged image. The processing preview and export use that image.
+   - Frames in a burst are averaged as they are captured, so each shot keeps one averaged image. Z-Log2 burst assets remain linear through processing and are encoded only for previews or raw-negative PNG export.
    - Save and load color-adjustment profiles as `.txt` files.
    - Export all rolls as individual PNG files or as one ZIP archive using the controls below the preview.
    - Raw negatives are included by default; switch **Also export raw negatives** off to omit them. ZIP exports place included negatives and each roll’s global color profile (`Roll XX.txt`) in a `negatives` subfolder.
@@ -46,7 +46,7 @@ The right panel changes with the active workflow step. The app fills the browser
 
 - Camera frames are processed in the browser; this app does not upload captured images to a Negative Lab server.
 - Captured frames and edits exist only in memory for the current page session. Export processed PNGs before reloading or closing the page; there is no session restore or raw-data backup.
-- Each shot stores one averaged 4K RGBA image (about 32 MiB) regardless of burst size, so memory grows with the number of shots rather than with burst frames. Use a lower camera resolution if the browser becomes unstable.
+- Standard shots store one averaged 4K RGBA image (about 32 MiB); Z-Log2 burst shots store 16-bit linear RGB (about 48 MiB). Both use one image per shot regardless of burst size. Use a lower camera resolution if the browser becomes unstable.
 - Tailwind CSS 3.4.17 and OpenCV.js 4.13.0 are loaded from their CDNs first and fall back to `vendor/`; OpenCV.js includes its WebAssembly payload. License notices are in `vendor/LICENSES/`.
 
 ## Troubleshooting

@@ -4,7 +4,7 @@
   const { state, $, activeRoll, activeShot, pad, clamp, notify, beginProgress, updateProgress, endProgress } = window.NegativeLabCore;
   const MAX_BURST_FRAME_COUNT = 16;
   const imageProcessor = window.NegativeLabImageProcessing({ state, $, clamp });
-  const { rawToLinear, workingRange } = imageProcessor;
+  const { rawToLinear, workingRange, zlog2ToLinear, getZlog2Encoder, linear16ToZlog2Rgba } = imageProcessor;
   const curveChannels = ["red", "green", "blue", "white"];
   const defaultCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }];
   const colorMasterCurve = () => [
@@ -105,12 +105,23 @@
   const captureCanvas = document.createElement("canvas");
   const captureContext = captureCanvas.getContext("2d", { willReadFrequently: true });
   const { processShot, applyAdjustments, applyAdjustmentsSync, buildCurveInputLuts, buildCssPreviewTables } = imageProcessor;
+  function pixelsForDisplay(shot) {
+    return shot.pixelEncoding === "linear16-zlog2"
+      ? linear16ToZlog2Rgba(shot.pixels)
+      : shot.pixels;
+  }
   const { updateExportState } = window.NegativeLabExport({
     state, $, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings
   });
   const { renderReview } = window.NegativeLabReview({
     state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail,
-    applyPreviewAdjustments: (data) => applyAdjustmentsSync(data, state.livePreviewAdjustments, true),
+    pixelsForDisplay,
+    applyPreviewAdjustments: (data, shot) => applyAdjustmentsSync(
+      data,
+      state.livePreviewAdjustments,
+      true,
+      shot.pixelEncoding === "linear16-zlog2" || $("#zlog2Toggle").checked
+    ),
     updatePreviewFilter: () => updateCssPreview($("#reviewCanvas"))
   });
 
@@ -659,6 +670,13 @@
       let height = 0;
       // Running sum of the burst; only allocated when more than one frame is captured.
       let sum = null;
+      const averageZlog2 = frameCount > 1 && $("#zlog2Toggle").checked;
+      const zlog2Encoder = averageZlog2 ? getZlog2Encoder() : null;
+      const zlog2DecodeLut = averageZlog2
+        ? Uint16Array.from({ length: 256 }, (_, value) =>
+          Math.round((zlog2ToLinear(value / 255) - zlog2Encoder.minimumLinear) / zlog2Encoder.linearRange * 65535))
+        : null;
+      let linearMean = null;
       let pixels = null;
       for (let index = 0; index < frameCount; index++) {
         if (index) await new Promise((resolve) => setTimeout(resolve, 60));
@@ -677,6 +695,16 @@
         }
         if (frameCount === 1) {
           pixels = frame.pixels;
+        } else if (averageZlog2) {
+          linearMean ||= new Uint16Array(frame.pixels.length / 4 * 3);
+          const framePixels = frame.pixels;
+          const previousWeight = index / (index + 1);
+          const frameWeight = 1 / (index + 1);
+          for (let source = 0, target = 0; source < framePixels.length; source += 4, target += 3) {
+            linearMean[target] = Math.round(linearMean[target] * previousWeight + zlog2DecodeLut[framePixels[source]] * frameWeight);
+            linearMean[target + 1] = Math.round(linearMean[target + 1] * previousWeight + zlog2DecodeLut[framePixels[source + 1]] * frameWeight);
+            linearMean[target + 2] = Math.round(linearMean[target + 2] * previousWeight + zlog2DecodeLut[framePixels[source + 2]] * frameWeight);
+          }
         } else {
           sum ||= new Uint16Array(frame.pixels.length);
           const framePixels = frame.pixels;
@@ -684,13 +712,15 @@
         }
         $("#captureStatusCapture").textContent = `Capturing frame ${index + 1} of ${frameCount}`;
       }
-      if (sum) {
+      if (linearMean) {
+        pixels = linearMean;
+      } else if (sum) {
         // Averaging happens here so each shot keeps a single 8-bit RGBA asset instead of every burst frame.
         pixels = new Uint8ClampedArray(sum.length);
         for (let i = 0; i < sum.length; i++) pixels[i] = Math.round(sum[i] / frameCount);
         sum = null;
       }
-      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
+      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, ...(linearMean ? { pixelEncoding: "linear16-zlog2" } : {}), quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
       activeRoll().shots.push(shot);
       state.selectedShotIndex = activeRoll().shots.length - 1;
       $("#scanFlash").classList.remove("fire");
@@ -723,7 +753,7 @@
       thumb = document.createElement("canvas");
       thumb.width = shot.width;
       thumb.height = shot.height;
-      thumb.getContext("2d", { willReadFrequently: true }).putImageData(new ImageData(shot.pixels, shot.width, shot.height), 0, 0);
+      thumb.getContext("2d", { willReadFrequently: true }).putImageData(new ImageData(pixelsForDisplay(shot), shot.width, shot.height), 0, 0);
     }
     const result = document.createElement("canvas");
     result.width = 120;
@@ -1089,9 +1119,9 @@
   let adjustedPreviewPending = false;
   let exactPreviewTimer = null;
 
-  function histogramForPreview(imageData, invert, settings) {
+  function histogramForPreview(imageData, invert, settings, decodeZlog2) {
     const histogram = Object.fromEntries(curveChannels.map((channel) => [channel, new Uint32Array(256)]));
-    const curveInputs = buildCurveInputLuts(settings, invert);
+    const curveInputs = buildCurveInputLuts(settings, invert, decodeZlog2);
     const sampleStep = Math.max(1, Math.ceil(Math.sqrt((imageData.width * imageData.height) / 65536)));
     for (let y = 0; y < imageData.height; y += sampleStep) {
       for (let x = 0; x < imageData.width; x += sampleStep) {
@@ -1116,6 +1146,8 @@
     if (!image) return;
     const settings = getAdjustmentSettings();
     const invert = $("#invertToggle").checked;
+    const shot = activeRoll().shots[activeRoll().previewShotIndex || 0];
+    const decodeZlog2 = shot?.pixelEncoding === "linear16-zlog2" || $("#zlog2Toggle").checked;
     const canvas = $("#processPreview");
     const context = canvas.getContext("2d");
     const sequence = (state.previewAdjustmentSequence || 0) + 1;
@@ -1123,7 +1155,7 @@
     clearTimeout(exactPreviewTimer);
     context.putImageData(image, 0, 0);
     // The CSS preview is component-wise; the idle pass below restores the exact luminance-based master curve.
-    const tables = buildCssPreviewTables(settings, invert);
+    const tables = buildCssPreviewTables(settings, invert, decodeZlog2);
     Object.entries(tables).forEach(([channel, table]) => {
       previewFilterFunctions[channel].setAttribute("tableValues", table);
     });
@@ -1131,14 +1163,13 @@
     const hueFilter = hue ? ` hue-rotate(${hue}deg)` : "";
     const desaturateFilter = settings.desaturate ? " grayscale(1)" : "";
     canvas.style.filter = `url(#developPreviewFilter)${hueFilter}${desaturateFilter}`;
-    state.previewHistogram = histogramForPreview(image, invert, settings);
+    state.previewHistogram = histogramForPreview(image, invert, settings, decodeZlog2);
     drawCurveEditors();
     exactPreviewTimer = setTimeout(async () => {
       try {
         const output = new Uint8ClampedArray(image.data);
         const completed = await applyAdjustments(output, settings, invert, () => {}, output, () =>
-          sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData
-        );
+          sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData, decodeZlog2);
         if (!completed || sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData) return;
         context.putImageData(new ImageData(output, image.width, image.height), 0, 0);
         canvas.style.filter = "none";
