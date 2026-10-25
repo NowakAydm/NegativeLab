@@ -469,6 +469,13 @@ button {
   object-fit: contain;
 }
 
+.preview-filter-definitions {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
 
 
 @keyframes arrive {

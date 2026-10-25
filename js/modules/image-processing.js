@@ -116,6 +116,20 @@
       return { ...channels, gamma, master };
     }
 
+    function buildCssPreviewTables(imageAdjustments, invert) {
+      const luts = buildAdjustmentLuts(imageAdjustments, invert);
+      return Object.fromEntries(["red", "green", "blue"].map((channel) => {
+        const table = new Array(256);
+        for (let value = 0; value < 256; value++) {
+          const channelValue = luts[channel][value];
+          const masterValue = evaluateMaster(luts.master, channelValue);
+          const encoded = encodeLinearValue(luts.gamma, masterValue);
+          table[value] = (encoded / 255).toFixed(5);
+        }
+        return [channel, table.join(" ")];
+      }));
+    }
+
     function encodeLinearValue(lut, value) {
       return lut[Math.round(clamp(value / 255, 0, 1) * 65535)];
     }
@@ -198,16 +212,19 @@
       }
     }
 
-    async function applyAdjustments(data, imageAdjustments, invert, onProgress = () => {}, source = data) {
+    async function applyAdjustments(data, imageAdjustments, invert, onProgress = () => {}, source = data, shouldCancel = () => false) {
       const luts = buildAdjustmentLuts(imageAdjustments, invert);
       for (let index = 0; index < data.length; index += 4) {
         if (index && index % 262144 === 0) {
+          if (shouldCancel()) return false;
           onProgress(index / data.length * 100);
           await yieldToBrowser();
         }
         applyPixel(data, index, imageAdjustments, luts, source);
       }
+      if (shouldCancel()) return false;
       onProgress(100);
+      return true;
     }
 
     async function processShot(shot, { raw = false, preview = false, adjustments = null, onProgress = () => {} } = {}) {
@@ -280,6 +297,9 @@
       }
     }
 
-    return { processShot, applyAdjustments, applyAdjustmentsSync, buildAdjustmentLuts, buildCurveInputLuts, rawToLinear, workingRange };
+    return {
+      processShot, applyAdjustments, applyAdjustmentsSync, buildAdjustmentLuts,
+      buildCssPreviewTables, buildCurveInputLuts, rawToLinear, workingRange
+    };
   };
 })();

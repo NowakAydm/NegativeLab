@@ -104,9 +104,9 @@
   const captureSourceContext = captureSourceCanvas.getContext("2d", { willReadFrequently: true });
   const captureCanvas = document.createElement("canvas");
   const captureContext = captureCanvas.getContext("2d", { willReadFrequently: true });
-  const { processShot, applyAdjustments, applyAdjustmentsSync, buildCurveInputLuts } = imageProcessor;
+  const { processShot, applyAdjustments, applyAdjustmentsSync, buildCurveInputLuts, buildCssPreviewTables } = imageProcessor;
   const { updateExportState } = window.NegativeLabExport({
-    state, $, pad, notify, beginProgress, updateProgress, endProgress, processShot
+    state, $, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings
   });
   const { renderReview } = window.NegativeLabReview({
     state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail,
@@ -330,7 +330,7 @@
       state.previewBaseData = null;
       state.previewHistogram = null;
       updateProcessState();
-      scanRollLevels().finally(() => { if (state.mode === "process") { updateProcessState(); updateProcessPreview(); } });
+      updateProcessPreview();
     }
     if (mode === "process") updateExportState();
     renderFilmList();
@@ -690,7 +690,7 @@
         for (let i = 0; i < sum.length; i++) pixels[i] = Math.round(sum[i] / frameCount);
         sum = null;
       }
-      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "corners", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
+      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
       activeRoll().shots.push(shot);
       state.selectedShotIndex = activeRoll().shots.length - 1;
       $("#scanFlash").classList.remove("fire");
@@ -777,7 +777,7 @@
           filmGuides: null,
           autoFilmGuides: null,
           filmCrop: null,
-          adjustMode: "corners",
+          adjustMode: "rectangle",
           flipX: false,
           flipY: false,
           thumbnail,
@@ -1038,24 +1038,6 @@
     }
   }
 
-  function histogramFor(imageData, invert, settings) {
-    const histogram = Object.fromEntries(curveChannels.map((channel) => [channel, new Uint32Array(256)]));
-    const curveInputs = buildCurveInputLuts(settings, invert);
-    for (let index = 0; index < imageData.data.length; index += 4) {
-      const redInput = Math.round(curveInputs.redInput[imageData.data[index]]);
-      const greenInput = Math.round(curveInputs.greenInput[imageData.data[index + 1]]);
-      const blueInput = Math.round(curveInputs.blueInput[imageData.data[index + 2]]);
-      const redOutput = curveInputs.red[imageData.data[index]];
-      const greenOutput = curveInputs.green[imageData.data[index + 1]];
-      const blueOutput = curveInputs.blue[imageData.data[index + 2]];
-      histogram.red[redInput]++;
-      histogram.green[greenInput]++;
-      histogram.blue[blueInput]++;
-      histogram.white[Math.round(redOutput * .2126 + greenOutput * .7152 + blueOutput * .0722)]++;
-    }
-    return histogram;
-  }
-
   function updateProcessState() {
     const roll = activeRoll();
     roll.adjustments = normalizeAdjustments(roll.adjustments);
@@ -1067,6 +1049,7 @@
     $("#previewAdjustmentsToggle").disabled = !previewShot;
     $("#pickReferenceWhiteButton").disabled = !previewShot;
     $("#pickReferenceBlackButton").disabled = !previewShot;
+    $("#autoDetectLevelsButton").disabled = !previewShot || !state.cvReady;
     $("#previewAdjustmentsToggle").checked = Boolean(previewShot?.adjustments);
     $("#adjustmentScopeTitle").textContent = previewShot?.adjustments
       ? "Shot-specific image adjustments"
@@ -1091,26 +1074,100 @@
       shot.number,
       shot.quad,
       shot.flipX,
-      shot.flipY,
-      $("#invertToggle").checked
+      shot.flipY
     ]);
   }
 
-  async function renderAdjustedPreview() {
+  const previewFilterFunctions = {
+    red: $("#developPreviewRed"),
+    green: $("#developPreviewGreen"),
+    blue: $("#developPreviewBlue")
+  };
+
+  let adjustedPreviewScheduled = false;
+  let adjustedPreviewInProgress = false;
+  let adjustedPreviewPending = false;
+  let exactPreviewTimer = null;
+
+  function histogramForPreview(imageData, invert, settings) {
+    const histogram = Object.fromEntries(curveChannels.map((channel) => [channel, new Uint32Array(256)]));
+    const curveInputs = buildCurveInputLuts(settings, invert);
+    const sampleStep = Math.max(1, Math.ceil(Math.sqrt((imageData.width * imageData.height) / 65536)));
+    for (let y = 0; y < imageData.height; y += sampleStep) {
+      for (let x = 0; x < imageData.width; x += sampleStep) {
+        const index = (y * imageData.width + x) * 4;
+        const redInput = Math.round(curveInputs.redInput[imageData.data[index]]);
+        const greenInput = Math.round(curveInputs.greenInput[imageData.data[index + 1]]);
+        const blueInput = Math.round(curveInputs.blueInput[imageData.data[index + 2]]);
+        const redOutput = curveInputs.red[imageData.data[index]];
+        const greenOutput = curveInputs.green[imageData.data[index + 1]];
+        const blueOutput = curveInputs.blue[imageData.data[index + 2]];
+        histogram.red[redInput]++;
+        histogram.green[greenInput]++;
+        histogram.blue[blueInput]++;
+        histogram.white[Math.round(redOutput * .2126 + greenOutput * .7152 + blueOutput * .0722)]++;
+      }
+    }
+    return histogram;
+  }
+
+  function renderAdjustedPreview() {
     const image = state.previewBaseData;
     if (!image) return;
     const settings = getAdjustmentSettings();
-    state.previewHistogram = histogramFor(image, $("#invertToggle").checked, settings);
-    const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
+    const invert = $("#invertToggle").checked;
+    const canvas = $("#processPreview");
+    const context = canvas.getContext("2d");
     const sequence = (state.previewAdjustmentSequence || 0) + 1;
     state.previewAdjustmentSequence = sequence;
-    await applyAdjustments(output.data, settings, $("#invertToggle").checked);
-    if (sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData) return;
-    const canvas = $("#processPreview");
-    canvas.width = image.width;
-    canvas.height = image.height;
-    canvas.getContext("2d").putImageData(output, 0, 0);
+    clearTimeout(exactPreviewTimer);
+    context.putImageData(image, 0, 0);
+    // The CSS preview is component-wise; the idle pass below restores the exact luminance-based master curve.
+    const tables = buildCssPreviewTables(settings, invert);
+    Object.entries(tables).forEach(([channel, table]) => {
+      previewFilterFunctions[channel].setAttribute("tableValues", table);
+    });
+    const hue = Number(settings.hue) || 0;
+    const hueFilter = hue ? ` hue-rotate(${hue}deg)` : "";
+    const desaturateFilter = settings.desaturate ? " grayscale(1)" : "";
+    canvas.style.filter = `url(#developPreviewFilter)${hueFilter}${desaturateFilter}`;
+    state.previewHistogram = histogramForPreview(image, invert, settings);
     drawCurveEditors();
+    exactPreviewTimer = setTimeout(async () => {
+      try {
+        const output = new Uint8ClampedArray(image.data);
+        const completed = await applyAdjustments(output, settings, invert, () => {}, output, () =>
+          sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData
+        );
+        if (!completed || sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData) return;
+        context.putImageData(new ImageData(output, image.width, image.height), 0, 0);
+        canvas.style.filter = "none";
+      } catch (error) {
+        if (sequence === state.previewAdjustmentSequence && image === state.previewBaseData) {
+          notify(`Preview adjustment failed: ${error.message}`, true);
+        }
+      }
+    }, 160);
+  }
+
+  function queueAdjustedPreview() {
+    adjustedPreviewPending = true;
+    if (adjustedPreviewScheduled || adjustedPreviewInProgress) return;
+    adjustedPreviewScheduled = true;
+    requestAnimationFrame(() => {
+      adjustedPreviewScheduled = false;
+      if (!adjustedPreviewPending) return;
+      adjustedPreviewPending = false;
+      adjustedPreviewInProgress = true;
+      try {
+        renderAdjustedPreview();
+      } catch (error) {
+        notify(`Preview adjustment failed: ${error.message}`, true);
+      } finally {
+        adjustedPreviewInProgress = false;
+        if (adjustedPreviewPending) queueAdjustedPreview();
+      }
+    });
   }
 
   function queueProcessPreview(rebuild = false) {
@@ -1121,13 +1178,16 @@
       rebuild = true;
     }
     if (rebuild) {
+      state.previewAdjustmentSequence = (state.previewAdjustmentSequence || 0) + 1;
+      clearTimeout(exactPreviewTimer);
       state.previewBaseKey = "";
       state.previewBaseData = null;
       state.previewHistogram = null;
+      adjustedPreviewPending = false;
       previewPickBitmap?.close();
       previewPickBitmap = null;
     } else if (state.previewBaseData) {
-      renderAdjustedPreview().catch((error) => notify(`Preview adjustment failed: ${error.message}`, true));
+      queueAdjustedPreview();
       return;
     } else if (state.previewProcessing) {
       state.previewPending = true;
@@ -1149,6 +1209,7 @@
       state.previewHistogram = null;
       previewPickBitmap?.close();
       previewPickBitmap = null;
+      $("#processPreview").style.filter = "none";
       drawCurveEditors();
       canvas.width = 900;
       canvas.height = 520;
@@ -1167,7 +1228,7 @@
       previewPickBitmap = null;
     }
     if (state.previewBaseData && state.previewBaseKey === previewKey) {
-      await renderAdjustedPreview();
+      queueAdjustedPreview();
       return;
     }
     if (state.previewProcessing) {
@@ -1197,16 +1258,12 @@
       const context = canvas.getContext("2d", { willReadFrequently: true });
       context.drawImage(image, 0, 0, previewWidth, previewHeight);
       state.previewBaseData = context.getImageData(0, 0, previewWidth, previewHeight);
-      state.previewHistogram = histogramFor(
-        state.previewBaseData,
-        $("#invertToggle").checked,
-        getAdjustmentSettings()
-      );
       state.previewBaseKey = previewKey;
       previewPickBitmap?.close();
       previewPickBitmap = image;
-      await renderAdjustedPreview();
+      queueAdjustedPreview();
     } catch (error) {
+      canvas.style.filter = "none";
       updateProgress(progressId, `Preview failed: ${error.message}`, 100);
       const context = canvas.getContext("2d");
       canvas.width = 900;
@@ -1218,76 +1275,82 @@
       context.fillText(`Preview unavailable: ${error.message}`, 16, 40);
     } finally {
       state.previewProcessing = false;
+      endProgress(progressId);
       if (state.previewPending) {
         state.previewPending = false;
         updateProcessPreview();
-      } else endProgress(progressId);
+      }
     }
   }
 
-  // Scans every reframed shot of the roll and keeps the per-channel min/max of the raw scan (with the shot it came from).
-  async function scanRollLevels() {
+  async function autoDetectShotLevels() {
     const roll = activeRoll();
-    if (!roll.shots.length || !state.cvReady) return;
-    const key = JSON.stringify(roll.shots.map((shot) => [shot.number, shot.quad, shot.flipX, shot.flipY]));
-    if (roll.levelsKey === key && roll.levels) return;
-    const progressId = beginProgress("Scanning roll levels", "Measuring min/max across all shots…", { blocking: false });
+    const shot = roll.shots[roll.previewShotIndex || 0];
+    if (!shot) {
+      notify("Select a shot before detecting its levels.", true);
+      return;
+    }
+    if (!state.cvReady) {
+      notify("Wait for OpenCV to finish loading before detecting shot levels.", true);
+      return;
+    }
+    const button = $("#autoDetectLevelsButton");
+    button.disabled = true;
+    let image = null;
+    let sampleCanvas = null;
+    const progressId = beginProgress("Detecting shot levels", `Measuring RGB ranges from Shot ${pad(shot.number)}…`, { blocking: false });
     try {
-      const invert = $("#invertToggle").checked;
-      const found = Object.fromEntries(rgbChannels.map((channel) => [channel, {
-        min: 255, max: 0, minShot: null, maxShot: null
-      }]));
-      for (const [index, shot] of roll.shots.entries()) {
-        updateProgress(progressId, `Scanning Shot ${pad(shot.number)} (${index + 1}/${roll.shots.length})`, index / roll.shots.length * 100);
-        const blob = await processShot(shot, { raw: true, preview: true });
-        const image = await createImageBitmap(blob);
-        const scale = Math.min(1, 600 / image.width, 600 / image.height);
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(image.width * scale));
-        canvas.height = Math.max(1, Math.round(image.height * scale));
-        const context = canvas.getContext("2d", { willReadFrequently: true });
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        image.close();
-        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-        const histograms = rgbChannels.map(() => new Float64Array(256));
-        for (let pixel = 0; pixel < data.length; pixel += 4) {
-          histograms[0][data[pixel]]++;
-          histograms[1][data[pixel + 1]]++;
-          histograms[2][data[pixel + 2]]++;
-        }
-        const shotLevels = [];
-        rgbChannels.forEach((channel, channelIndex) => {
-          const histogram = histograms[channelIndex];
-          const total = histogram.reduce((sum, count) => sum + count, 0);
-          const limit = total * LEVELS_OUTLIER_FRACTION;
-          let min = 0;
-          let max = 255;
-          for (let sum = 0; min < 255 && sum + histogram[min] <= limit; min++) sum += histogram[min];
-          for (let sum = 0; max > 0 && sum + histogram[max] <= limit; max--) sum += histogram[max];
-          if (min < found[channel].min) Object.assign(found[channel], { min, minShot: shot.number });
-          if (max > found[channel].max) Object.assign(found[channel], { max, maxShot: shot.number });
-          shotLevels.push(`${channel} ${min}-${max}`);
-        });
-        console.log(`[Levels] Shot ${pad(shot.number)} raw scan min-max: ${shotLevels.join(", ")}`);
-      }
-      const levels = {};
-      rgbChannels.forEach((channel) => {
-        const { min, max } = found[channel];
-        levels[channel] = { min, max: Math.max(max, min + 1) };
-        const range = workingRange(levels[channel], invert);
-        const lowShot = invert ? found[channel].maxShot : found[channel].minShot;
-        const highShot = invert ? found[channel].minShot : found[channel].maxShot;
-        console.log(`[Levels] Roll ${pad(roll.number)} ${channel}: min ${range.min} (Shot ${pad(lowShot)}), max ${range.max} (Shot ${pad(highShot)}) after ${invert ? "inversion" : "no inversion"}; raw scan ${min}-${max}`);
+      const blob = await processShot(shot, {
+        raw: true,
+        preview: true,
+        onProgress: ({ stage, percent }) => updateProgress(progressId, stage, percent)
       });
-      roll.levels = levels;
-      roll.levelsKey = key;
-      roll.adjustments = normalizeAdjustments(roll.adjustments);
-      roll.adjustments.levels = cloneLevels(levels);
-      updateProgress(progressId, "Roll levels ready", 100);
+      image = await createImageBitmap(blob);
+      const scale = Math.min(1, 600 / image.width, 600 / image.height);
+      sampleCanvas = document.createElement("canvas");
+      sampleCanvas.width = Math.max(1, Math.round(image.width * scale));
+      sampleCanvas.height = Math.max(1, Math.round(image.height * scale));
+      const context = sampleCanvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0, sampleCanvas.width, sampleCanvas.height);
+      const { data } = context.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
+      const histograms = rgbChannels.map(() => new Uint32Array(256));
+      for (let pixel = 0; pixel < data.length; pixel += 4) {
+        histograms[0][data[pixel]]++;
+        histograms[1][data[pixel + 1]]++;
+        histograms[2][data[pixel + 2]]++;
+      }
+      const settings = activeAdjustmentSettings();
+      rgbChannels.forEach((channel, channelIndex) => {
+        const histogram = histograms[channelIndex];
+        const total = histogram.reduce((sum, count) => sum + count, 0);
+        const outlierLimit = total * LEVELS_OUTLIER_FRACTION;
+        let minimum = 0;
+        let lowerCount = 0;
+        while (minimum < 255 && lowerCount + histogram[minimum] <= outlierLimit) {
+          lowerCount += histogram[minimum];
+          minimum++;
+        }
+        let maximum = 255;
+        let upperCount = 0;
+        while (maximum > 0 && upperCount + histogram[maximum] <= outlierLimit) {
+          upperCount += histogram[maximum];
+          maximum--;
+        }
+        minimum = clamp(minimum, 0, 254);
+        maximum = clamp(maximum, minimum + 1, 255);
+        settings.levels[channel] = { min: minimum, max: maximum };
+      });
+      updateProcessState();
+      queueProcessPreview();
+      updateProgress(progressId, `Shot ${pad(shot.number)} RGB levels ready`, 100);
     } catch (error) {
-      notify(`Roll level scan failed: ${error.message}`, true);
+      notify(`Shot level detection failed: ${error.message}`, true);
     } finally {
+      image?.close();
+      if (sampleCanvas) sampleCanvas.width = sampleCanvas.height = 0;
       endProgress(progressId);
+      const currentShot = activeRoll().shots[activeRoll().previewShotIndex || 0];
+      button.disabled = !state.cvReady || !currentShot;
     }
   }
 
@@ -1344,6 +1407,7 @@
   Object.entries(referencePickButtons).forEach(([mode, button]) => {
     button.addEventListener("click", () => setReferencePickMode(mode));
   });
+  $("#autoDetectLevelsButton").addEventListener("click", autoDetectShotLevels);
   $("#processPreview").addEventListener("click", (event) => {
     if (!referencePickMode) return;
     if (!previewPickBitmap) {
@@ -1351,8 +1415,20 @@
       return;
     }
     const bounds = event.currentTarget.getBoundingClientRect();
-    const x = clamp(Math.floor((event.clientX - bounds.left) / bounds.width * previewPickBitmap.width), 0, previewPickBitmap.width - 1);
-    const y = clamp(Math.floor((event.clientY - bounds.top) / bounds.height * previewPickBitmap.height), 0, previewPickBitmap.height - 1);
+    const scale = Math.min(bounds.width / previewPickBitmap.width, bounds.height / previewPickBitmap.height);
+    if (!scale) {
+      notify("The cropped preview is not visible yet. Wait for it to finish loading, then try again.", true);
+      return;
+    }
+    const displayWidth = previewPickBitmap.width * scale;
+    const displayHeight = previewPickBitmap.height * scale;
+    const offsetX = (bounds.width - displayWidth) / 2;
+    const offsetY = (bounds.height - displayHeight) / 2;
+    const imageX = event.clientX - bounds.left - offsetX;
+    const imageY = event.clientY - bounds.top - offsetY;
+    if (imageX < 0 || imageY < 0 || imageX >= displayWidth || imageY >= displayHeight) return;
+    const x = Math.floor(imageX / scale);
+    const y = Math.floor(imageY / scale);
     const pixelCanvas = document.createElement("canvas");
     pixelCanvas.width = 1;
     pixelCanvas.height = 1;
@@ -1361,10 +1437,10 @@
     const pixel = pixelContext.getImageData(0, 0, 1, 1).data;
     const settings = activeAdjustmentSettings();
     const invert = $("#invertToggle").checked;
+    const whiteEndpoint = referencePickMode === "white";
+    const rawBound = whiteEndpoint === invert ? "min" : "max";
     rgbChannels.forEach((channel, index) => {
       const sample = pixel[index];
-      const whiteEndpoint = referencePickMode === "white";
-      const rawBound = whiteEndpoint === invert ? "min" : "max";
       const range = settings.levels[channel];
       if (rawBound === "min") {
         range.min = clamp(sample, 0, 254);
@@ -1378,7 +1454,7 @@
     setReferencePickMode(null);
     updateProcessState();
     queueProcessPreview();
-    notify(`Reference ${pickedMode} set from RGB ${pixel[0]}, ${pixel[1]}, ${pixel[2]}.`);
+    notify(`Reference ${pickedMode} set for all RGB curves from RGB ${pixel[0]}, ${pixel[1]}, ${pixel[2]}.`);
   });
   createCurveEditors(
     $("#captureCurves"),
@@ -1423,7 +1499,7 @@
   ["invertToggle", "zlog2Toggle"].forEach((id) => {
     $("#" + id).addEventListener("change", () => {
       updateProcessState();
-      queueProcessPreview(true);
+      queueProcessPreview();
     });
   });
 
@@ -1554,6 +1630,7 @@
     state.cvReady = true;
     $("#cvStatus").textContent = "OpenCV ready";
     $("#cvStatus").classList.add("ready");
+    if (state.mode === "process") updateProcessState();
     if (state.stream) $("#captureStatus").textContent = "Camera and image processing ready.";
   }
   initializeOpenCV();

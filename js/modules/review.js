@@ -9,13 +9,87 @@
     let processedPreviewShot = null;
     let processedPreviewKey = "";
     let processedPreviewCanvas = null;
+    const rectangleAspect = 3 / 2;
     const adjustmentModes = [
       ["cornerAdjustMode", "corners"],
+      ["rectangleAdjustMode", "rectangle"],
       ["filmAdjustMode", "film"]
     ];
 
     function midpoint(first, second) {
       return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    }
+
+    function rectangleFromDiagonal(topLeft, bottomRight) {
+      const dx = bottomRight.x - topLeft.x;
+      const dy = bottomRight.y - topLeft.y;
+      const diagonal = Math.hypot(dx, dy);
+      if (diagonal < 1) return null;
+      const diagonalAngle = Math.atan2(dy, dx);
+      const angle = diagonalAngle - Math.atan2(1, rectangleAspect);
+      const axis = { x: Math.cos(angle), y: Math.sin(angle) };
+      const crossAxis = { x: -axis.y, y: axis.x };
+      const halfWidth = diagonal * rectangleAspect / Math.sqrt(rectangleAspect ** 2 + 1) / 2;
+      const halfHeight = diagonal / Math.sqrt(rectangleAspect ** 2 + 1) / 2;
+      const center = midpoint(topLeft, bottomRight);
+      return [
+        { x: center.x - axis.x * halfWidth - crossAxis.x * halfHeight, y: center.y - axis.y * halfWidth - crossAxis.y * halfHeight },
+        { x: center.x + axis.x * halfWidth - crossAxis.x * halfHeight, y: center.y + axis.y * halfWidth - crossAxis.y * halfHeight },
+        { x: center.x + axis.x * halfWidth + crossAxis.x * halfHeight, y: center.y + axis.y * halfWidth + crossAxis.y * halfHeight },
+        { x: center.x - axis.x * halfWidth + crossAxis.x * halfHeight, y: center.y - axis.y * halfWidth + crossAxis.y * halfHeight }
+      ];
+    }
+
+    function rectangleFitsImage(shot, quad) {
+      const rightEdge = Math.max(0, shot.width - 1);
+      const bottomEdge = Math.max(0, shot.height - 1);
+      return quad.every(({ x, y }) => x >= 0 && y >= 0 && x <= rightEdge && y <= bottomEdge);
+    }
+
+    function rectangleFromQuad(shot, points = shot.quad) {
+      let rectangle = rectangleFromDiagonal(points[0], points[2]);
+      if (!rectangle || rectangleFitsImage(shot, rectangle)) return rectangle || points;
+      const center = midpoint(points[0], points[2]);
+      const dx = points[2].x - points[0].x;
+      const dy = points[2].y - points[0].y;
+      let lowerScale = 0;
+      let upperScale = 1;
+      let fitted = null;
+      for (let attempt = 0; attempt < 24; attempt++) {
+        const scale = (lowerScale + upperScale) / 2;
+        const halfX = dx * scale / 2;
+        const halfY = dy * scale / 2;
+        const candidate = rectangleFromDiagonal(
+          { x: center.x - halfX, y: center.y - halfY },
+          { x: center.x + halfX, y: center.y + halfY }
+        );
+        if (candidate && rectangleFitsImage(shot, candidate)) {
+          lowerScale = scale;
+          fitted = candidate;
+        } else upperScale = scale;
+      }
+      return fitted || rectangle;
+    }
+
+    function dragRectangleCorner(shot, handle, target) {
+      const fixed = shot.quad[handle === 0 ? 2 : 0];
+      const dx = target.x - fixed.x;
+      const dy = target.y - fixed.y;
+      let lowerScale = 0;
+      let upperScale = 1;
+      let fitted = null;
+      for (let attempt = 0; attempt < 24; attempt++) {
+        const scale = (lowerScale + upperScale) / 2;
+        const moving = { x: fixed.x + dx * scale, y: fixed.y + dy * scale };
+        const topLeft = handle === 0 ? moving : fixed;
+        const bottomRight = handle === 0 ? fixed : moving;
+        const candidate = rectangleFromDiagonal(topLeft, bottomRight);
+        if (candidate && rectangleFitsImage(shot, candidate)) {
+          lowerScale = scale;
+          fitted = candidate;
+        } else upperScale = scale;
+      }
+      return fitted;
     }
 
     // Orders corners clockwise on screen as TL, TR, BR, BL so labels 1-4 always match their positions.
@@ -115,7 +189,9 @@
       });
       $("#reviewHint").textContent = mode === "film"
         ? "Adjust the four film-edge dots. Drag the centerline between them to move the 3:2 crop along the film edges; use the square handle to resize."
-        : "Drag each crop corner independently to straighten and frame this shot.";
+        : mode === "rectangle"
+          ? "Drag the top-left and bottom-right handles to size and rotate a 3:2 crop."
+          : "Drag each crop corner independently to straighten and frame this shot.";
     }
 
     function renderReview() {
@@ -132,11 +208,13 @@
       $("#reviewShot").textContent = pad(shot.number);
       $("#flipXToggle").checked = Boolean(shot.flipX);
       $("#flipYToggle").checked = Boolean(shot.flipY);
-      shot.adjustMode ||= "corners";
+      shot.adjustMode ||= "rectangle";
       updateModeButtons(shot);
       if (shot.adjustMode === "film") {
         const geometry = filmGeometry(shot);
         if (geometry) shot.quad = filmCropCorners(geometry);
+      } else if (shot.adjustMode === "rectangle") {
+        shot.quad = rectangleFromQuad(shot);
       }
       drawReview();
     }
@@ -260,6 +338,17 @@
           mode: "film", scale, offsetX, offsetY, displayWidth, displayHeight, points: displayCrop,
           guides: displayGuides, centerLineStart, centerLineEnd, resizeHandle, geometry
         };
+      } else if (shot.adjustMode === "rectangle") {
+        const handles = [points[0], points[2]];
+        context.fillStyle = "#d8ff73";
+        handles.forEach(({ x, y }, index) => {
+          context.fillRect(x - 5, y - 5, 10, 10);
+          context.fillStyle = "#111";
+          context.font = "9px sans-serif";
+          context.fillText(String(index + 1), x + 6, y - 6);
+          context.fillStyle = "#d8ff73";
+        });
+        state.cropDisplay = { mode: "rectangle", scale, offsetX, offsetY, displayWidth, displayHeight, points: handles };
       } else {
         context.fillStyle = "rgba(216,255,115,.5)";
         context.beginPath();
@@ -335,6 +424,13 @@
       drawReview();
     }
 
+    function setRectangleMode(shot) {
+      shot.quad = rectangleFromQuad(shot);
+      shot.adjustMode = "rectangle";
+      updateModeButtons(shot);
+      drawReview();
+    }
+
     function isValidQuad(points) {
       const crossProducts = points.map((point, index) => {
         const next = points[(index + 1) % 4];
@@ -376,6 +472,14 @@
         point.pointY >= display.offsetY &&
         point.pointY <= display.offsetY + display.displayHeight;
       if (!insideImage) return;
+      if (display.mode === "rectangle") {
+        const handle = cropHandle(point.pointX, point.pointY, display);
+        if (handle < 0) return;
+        state.drag = { kind: "rectangle", handle };
+        canvas.setPointerCapture(event.pointerId);
+        event.preventDefault();
+        return;
+      }
       const handle = cropHandle(point.pointX, point.pointY, display);
       const selectedCorner = handle >= 0 ? handle : cornerRegion(point, shot.quad);
       state.drag = { kind: "corner", handle: selectedCorner };
@@ -416,6 +520,12 @@
         drawReview();
         return;
       }
+      if (state.drag.kind === "rectangle") {
+        const rectangle = dragRectangleCorner(shot, state.drag.handle, point);
+        if (rectangle) shot.quad = rectangle;
+        drawReview();
+        return;
+      }
       const adjusted = shot.quad.map(({ x, y }) => ({ x, y }));
       adjusted[state.drag.handle] = { x: point.x, y: point.y };
       if (isValidQuad(adjusted)) shot.quad = adjusted;
@@ -438,7 +548,10 @@
         shot.filmGuides = shot.autoFilmGuides?.map(({ x, y }) => ({ x, y })) || null;
         shot.filmCrop = null;
         setFilmMode(shot);
-      } else shot.quad = shot.autoQuad.map(({ x, y }) => ({ x, y }));
+      } else {
+        shot.quad = shot.autoQuad.map(({ x, y }) => ({ x, y }));
+        if (shot.adjustMode === "rectangle") shot.quad = rectangleFromQuad(shot);
+      }
       drawReview();
     });
     adjustmentModes.forEach(([buttonId, mode]) => {
@@ -446,6 +559,7 @@
         const shot = activeShot();
         if (!shot) return;
         if (mode === "film") setFilmMode(shot);
+        else if (mode === "rectangle") setRectangleMode(shot);
         else {
           shot.adjustMode = "corners";
           updateModeButtons(shot);

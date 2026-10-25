@@ -27,17 +27,18 @@ Allow camera access when prompted. Capture can begin as soon as the camera is re
    - Press **Import image** to add PNG, JPEG, or WebP files as single-frame shots covering the whole image, for reprocessing exported assets. Exported positives are already inverted, so turn off **Invert negative** for those rolls.
    - Create and name multiple rolls as needed. Captures stay in memory for the current page session.
 3. **Crop**
-   - Select a shot and adjust its crop using the four corners, or use the film-edge guides for a 3:2 crop.
+   - Select a shot and adjust its crop using four independent corners, **2 corners** for a rectangular crop using the top-left and bottom-right handles, or the film-edge guides for a 3:2 crop.
    - Flip the result horizontally or vertically, reset to the default crop, or remove a failed or duplicate shot.
    - The color-corrected crop preview is only a preview; it does not change the captured data or exported image.
 4. **Develop**
    - Adjust levels, brightness, contrast, hue, and RGB/master curves in the resizable processing panel. Select the R/G/B/W buttons to switch the curve editor; RGB selections also show their min/max levels. Adjustments can apply to the roll or to an individual shot.
+   - Levels are not scanned automatically. Use **Auto levels** to measure ranges from the selected shot only.
    - Use **Pick white** or **Pick black**, then click the matching point in the cropped preview to set its RGB level endpoints from the original crop pixels.
    - Choose whether to invert the negative, desaturate the final output for black-and-white rolls, and select the output gamma.
    - Frames in a burst are averaged as they are captured, so each shot keeps one averaged image. The processing preview and export use that image.
    - Save and load color-adjustment profiles as `.txt` files.
    - Export all rolls as individual PNG files or as one ZIP archive using the controls below the preview.
-   - Raw negatives are included by default; switch **Also export raw negatives** off to omit them. ZIP exports place included negatives in a `negatives` subfolder for each roll.
+   - Raw negatives are included by default; switch **Also export raw negatives** off to omit them. ZIP exports place included negatives and each roll’s global color profile (`Roll XX.txt`) in a `negatives` subfolder.
 
 The right panel changes with the active workflow step. The app fills the browser viewport without page-level scrolling; the roll/frame browser and side-panel controls scroll within their panes.
 

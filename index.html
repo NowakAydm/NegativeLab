@@ -11,6 +11,16 @@
 </head>
 
 <body>
+  <svg class="preview-filter-definitions" aria-hidden="true" focusable="false">
+    <filter id="developPreviewFilter" color-interpolation-filters="sRGB">
+      <feComponentTransfer>
+        <feFuncR id="developPreviewRed" type="table"></feFuncR>
+        <feFuncG id="developPreviewGreen" type="table"></feFuncG>
+        <feFuncB id="developPreviewBlue" type="table"></feFuncB>
+        <feFuncA type="identity"></feFuncA>
+      </feComponentTransfer>
+    </filter>
+  </svg>
   <div class="app-shell">
     <header class="topbar flex items-center justify-between gap-4 px-5 md:px-8">
       <div class="flex items-center gap-3">
@@ -127,6 +137,7 @@
           <div id="reviewContent" class="hidden">
             <div class="review-adjustment-modes mb-3" role="group" aria-label="Crop adjustment mode">
               <button id="cornerAdjustMode" class="mode-tab active" type="button" aria-pressed="true">Four corners</button>
+              <button id="rectangleAdjustMode" class="mode-tab" type="button" aria-pressed="false">2 corners</button>
               <button id="filmAdjustMode" class="mode-tab" type="button" aria-pressed="false">Film edges · 3:2</button>
             </div>
             <div class="review-stage workflow-preview" id="reviewStage"><canvas id="reviewCanvas"
@@ -282,6 +293,7 @@
               <div class="flex flex-wrap gap-2">
                 <button id="pickReferenceWhiteButton" class="secondary-button reference-pick-button" type="button" aria-pressed="false" title="Click the preview pixel that should represent white">Pick white</button>
                 <button id="pickReferenceBlackButton" class="secondary-button reference-pick-button" type="button" aria-pressed="false" title="Click the preview pixel that should represent black">Pick black</button>
+                <button id="autoDetectLevelsButton" class="secondary-button" type="button" title="Detect RGB ranges from the selected shot only">Auto levels</button>
               </div>
               <div class="flex flex-wrap gap-2 mt-2">
                 <button class="secondary-button" type="button" data-profile-action="save" data-profile-scope="process">Save profile</button>
