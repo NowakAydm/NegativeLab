@@ -124,7 +124,7 @@
         let completed = 0;
         let completedPngs = 0;
         for (const roll of rolls) {
-          const rollFolder = `${pad(roll.number)}_${safeName(roll.name || `Roll ${pad(roll.number)}`)}`;
+          const rollFolder = `${safeName(roll.name || `Roll ${pad(roll.number)}`)}`;
           const rollDirectory = directory ? await directory.getDirectoryHandle(rollFolder, { create: true }) : null;
           for (const shot of roll.shots) {
             const variants = [{ raw: false, prefix: "" }];

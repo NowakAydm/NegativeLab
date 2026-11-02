@@ -4,7 +4,7 @@
   const { state, $, activeRoll, activeShot, pad, clamp, notify, beginProgress, updateProgress, endProgress } = window.NegativeLabCore;
   const MAX_BURST_FRAME_COUNT = 16;
   const imageProcessor = window.NegativeLabImageProcessing({ state, $, clamp });
-  const { rawToLinear, workingRange, zlog2ToLinear, getZlog2Encoder, linear16ToZlog2Rgba } = imageProcessor;
+  const { rawToLinear, workingRange } = imageProcessor;
   const curveChannels = ["red", "green", "blue", "white"];
   const defaultCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }];
   const colorMasterCurve = () => [
@@ -105,11 +105,7 @@
   const captureCanvas = document.createElement("canvas");
   const captureContext = captureCanvas.getContext("2d", { willReadFrequently: true });
   const { processShot, applyAdjustments, applyAdjustmentsSync, buildCurveInputLuts, buildCssPreviewTables } = imageProcessor;
-  function pixelsForDisplay(shot) {
-    return shot.pixelEncoding === "linear16-zlog2"
-      ? linear16ToZlog2Rgba(shot.pixels)
-      : shot.pixels;
-  }
+  function pixelsForDisplay(shot) { return shot.pixels; }
   const { updateExportState } = window.NegativeLabExport({
     state, $, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings
   });
@@ -120,7 +116,7 @@
       data,
       state.livePreviewAdjustments,
       true,
-      shot.pixelEncoding === "linear16-zlog2" || $("#zlog2Toggle").checked
+      $("#zlog2Toggle").checked
     ),
     updatePreviewFilter: () => updateCssPreview($("#reviewCanvas"))
   });
@@ -670,13 +666,6 @@
       let height = 0;
       // Running sum of the burst; only allocated when more than one frame is captured.
       let sum = null;
-      const averageZlog2 = frameCount > 1 && $("#zlog2Toggle").checked;
-      const zlog2Encoder = averageZlog2 ? getZlog2Encoder() : null;
-      const zlog2DecodeLut = averageZlog2
-        ? Uint16Array.from({ length: 256 }, (_, value) =>
-          Math.round((zlog2ToLinear(value / 255) - zlog2Encoder.minimumLinear) / zlog2Encoder.linearRange * 65535))
-        : null;
-      let linearMean = null;
       let pixels = null;
       for (let index = 0; index < frameCount; index++) {
         if (index) await new Promise((resolve) => setTimeout(resolve, 60));
@@ -695,16 +684,6 @@
         }
         if (frameCount === 1) {
           pixels = frame.pixels;
-        } else if (averageZlog2) {
-          linearMean ||= new Uint16Array(frame.pixels.length / 4 * 3);
-          const framePixels = frame.pixels;
-          const previousWeight = index / (index + 1);
-          const frameWeight = 1 / (index + 1);
-          for (let source = 0, target = 0; source < framePixels.length; source += 4, target += 3) {
-            linearMean[target] = Math.round(linearMean[target] * previousWeight + zlog2DecodeLut[framePixels[source]] * frameWeight);
-            linearMean[target + 1] = Math.round(linearMean[target + 1] * previousWeight + zlog2DecodeLut[framePixels[source + 1]] * frameWeight);
-            linearMean[target + 2] = Math.round(linearMean[target + 2] * previousWeight + zlog2DecodeLut[framePixels[source + 2]] * frameWeight);
-          }
         } else {
           sum ||= new Uint16Array(frame.pixels.length);
           const framePixels = frame.pixels;
@@ -712,15 +691,13 @@
         }
         $("#captureStatusCapture").textContent = `Capturing frame ${index + 1} of ${frameCount}`;
       }
-      if (linearMean) {
-        pixels = linearMean;
-      } else if (sum) {
+      if (sum) {
         // Averaging happens here so each shot keeps a single 8-bit RGBA asset instead of every burst frame.
         pixels = new Uint8ClampedArray(sum.length);
         for (let i = 0; i < sum.length; i++) pixels[i] = Math.round(sum[i] / frameCount);
         sum = null;
       }
-      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, ...(linearMean ? { pixelEncoding: "linear16-zlog2" } : {}), quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
+      const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
       activeRoll().shots.push(shot);
       state.selectedShotIndex = activeRoll().shots.length - 1;
       $("#scanFlash").classList.remove("fire");
@@ -1108,16 +1085,9 @@
     ]);
   }
 
-  const previewFilterFunctions = {
-    red: $("#developPreviewRed"),
-    green: $("#developPreviewGreen"),
-    blue: $("#developPreviewBlue")
-  };
-
   let adjustedPreviewScheduled = false;
   let adjustedPreviewInProgress = false;
   let adjustedPreviewPending = false;
-  let exactPreviewTimer = null;
 
   function histogramForPreview(imageData, invert, settings, decodeZlog2) {
     const histogram = Object.fromEntries(curveChannels.map((channel) => [channel, new Uint32Array(256)]));
@@ -1146,39 +1116,26 @@
     if (!image) return;
     const settings = getAdjustmentSettings();
     const invert = $("#invertToggle").checked;
-    const shot = activeRoll().shots[activeRoll().previewShotIndex || 0];
-    const decodeZlog2 = shot?.pixelEncoding === "linear16-zlog2" || $("#zlog2Toggle").checked;
+    const decodeZlog2 = $("#zlog2Toggle").checked;
     const canvas = $("#processPreview");
     const context = canvas.getContext("2d");
-    const sequence = (state.previewAdjustmentSequence || 0) + 1;
-    state.previewAdjustmentSequence = sequence;
-    clearTimeout(exactPreviewTimer);
     context.putImageData(image, 0, 0);
-    // The CSS preview is component-wise; the idle pass below restores the exact luminance-based master curve.
-    const tables = buildCssPreviewTables(settings, invert, decodeZlog2);
-    Object.entries(tables).forEach(([channel, table]) => {
-      previewFilterFunctions[channel].setAttribute("tableValues", table);
+    const tables = buildCssPreviewTables(settings, invert, decodeZlog2, $("#zlog2Gamut").value);
+    Object.entries(tables.input).forEach(([channel, table]) => {
+      $("#developPreviewInput" + channel[0].toUpperCase() + channel.slice(1)).setAttribute("tableValues", table);
     });
+    Object.entries(tables.output).forEach(([channel, table]) => {
+      $("#developPreviewOutput" + channel[0].toUpperCase() + channel.slice(1)).setAttribute("tableValues", table);
+    });
+    const matrix = tables.gamutMatrix || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const matrixValues = [...matrix.flatMap((row) => [...row, 0]), 0, 0, 0, 1, 0].join(" ");
+    $("#developPreviewGamut").setAttribute("values", matrixValues);
     const hue = Number(settings.hue) || 0;
     const hueFilter = hue ? ` hue-rotate(${hue}deg)` : "";
     const desaturateFilter = settings.desaturate ? " grayscale(1)" : "";
     canvas.style.filter = `url(#developPreviewFilter)${hueFilter}${desaturateFilter}`;
     state.previewHistogram = histogramForPreview(image, invert, settings, decodeZlog2);
     drawCurveEditors();
-    exactPreviewTimer = setTimeout(async () => {
-      try {
-        const output = new Uint8ClampedArray(image.data);
-        const completed = await applyAdjustments(output, settings, invert, () => {}, output, () =>
-          sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData, decodeZlog2);
-        if (!completed || sequence !== state.previewAdjustmentSequence || image !== state.previewBaseData) return;
-        context.putImageData(new ImageData(output, image.width, image.height), 0, 0);
-        canvas.style.filter = "none";
-      } catch (error) {
-        if (sequence === state.previewAdjustmentSequence && image === state.previewBaseData) {
-          notify(`Preview adjustment failed: ${error.message}`, true);
-        }
-      }
-    }, 160);
   }
 
   function queueAdjustedPreview() {
@@ -1209,8 +1166,6 @@
       rebuild = true;
     }
     if (rebuild) {
-      state.previewAdjustmentSequence = (state.previewAdjustmentSequence || 0) + 1;
-      clearTimeout(exactPreviewTimer);
       state.previewBaseKey = "";
       state.previewBaseData = null;
       state.previewHistogram = null;
@@ -1527,12 +1482,14 @@
     activeAdjustmentSettings().gamma = event.target.value;
     queueProcessPreview();
   });
-  ["invertToggle", "zlog2Toggle"].forEach((id) => {
+  ["invertToggle", "zlog2Toggle", "zlog2Gamut"].forEach((id) => {
     $("#" + id).addEventListener("change", () => {
+      $("#zlog2GamutControl").hidden = !$("#zlog2Toggle").checked;
       updateProcessState();
       queueProcessPreview();
     });
   });
+  $("#zlog2GamutControl").hidden = !$("#zlog2Toggle").checked;
 
   const PROFILE_FORMAT = "NegativeLabColorProfile";
 

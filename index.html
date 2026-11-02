@@ -14,9 +14,16 @@
   <svg class="preview-filter-definitions" aria-hidden="true" focusable="false">
     <filter id="developPreviewFilter" color-interpolation-filters="sRGB">
       <feComponentTransfer>
-        <feFuncR id="developPreviewRed" type="table"></feFuncR>
-        <feFuncG id="developPreviewGreen" type="table"></feFuncG>
-        <feFuncB id="developPreviewBlue" type="table"></feFuncB>
+        <feFuncR id="developPreviewInputRed" type="table"></feFuncR>
+        <feFuncG id="developPreviewInputGreen" type="table"></feFuncG>
+        <feFuncB id="developPreviewInputBlue" type="table"></feFuncB>
+        <feFuncA type="identity"></feFuncA>
+      </feComponentTransfer>
+      <feColorMatrix id="developPreviewGamut" type="matrix"></feColorMatrix>
+      <feComponentTransfer>
+        <feFuncR id="developPreviewOutputRed" type="table"></feFuncR>
+        <feFuncG id="developPreviewOutputGreen" type="table"></feFuncG>
+        <feFuncB id="developPreviewOutputBlue" type="table"></feFuncB>
         <feFuncA type="identity"></feFuncA>
       </feComponentTransfer>
     </filter>
@@ -200,7 +207,14 @@
             <div class="sidebar-control-section">
               <div class="eyebrow mb-3">Negative setup</div>
               <label class="field-label flex items-center gap-2"><input id="zlog2Toggle" type="checkbox"> Decode Z-Log2 input</label>
-              <p class="mt-2 text-[10px] subtle">Z-Log2 bursts are averaged and stored in linear light before adjustments.</p>
+              <label id="zlog2GamutControl" class="block mt-3 text-xs">
+                <span class="field-label">Z-Log2 input gamut</span>
+                <select id="zlog2Gamut" class="field-select mt-1">
+                  <option value="zcam" selected>Z-Cam</option>
+                  <option value="rec709">Rec.709</option>
+                </select>
+              </label>
+              <p class="mt-2 text-[10px] subtle">Select the gamut encoded in the footage. Captures remain 8-bit.</p>
               <label for="burstFrameCount" class="field-label mt-4">Frames per burst</label>
               <div class="burst-count-control">
                 <button id="decreaseBurstFrameCount" class="burst-count-button" type="button"
@@ -303,7 +317,7 @@
             <div id="processAdjustments" class="adjustment-controls"></div>
             <div class="toggle-row process-scope-toggle">
               <div>
-                <div class="text-sm font-bold">Shot-specific adjustments</div>
+                <label for="previewAdjustmentsToggle" class="text-sm font-bold cursor-pointer">Shot-specific adjustments</label>
                 <div class="mt-1 text-xs subtle">Apply settings to this shot only.</div>
               </div><input id="previewAdjustmentsToggle" class="switch" type="checkbox"
                 aria-label="Use shot-specific image adjustments">
