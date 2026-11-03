@@ -72,19 +72,28 @@
     }
 
     function dragRectangleCorner(shot, handle, target) {
-      const fixed = shot.quad[handle === 0 ? 2 : 0];
-      const dx = target.x - fixed.x;
-      const dy = target.y - fixed.y;
+      const movingIndex = handle === 0 ? 0 : 2;
+      const current = shot.quad[movingIndex];
+      const fixed = shot.quad[2 - movingIndex];
+      const rectangleAt = (point) => {
+        const topLeft = handle === 0 ? point : fixed;
+        const bottomRight = handle === 0 ? fixed : point;
+        const candidate = rectangleFromDiagonal(topLeft, bottomRight);
+        return candidate && rectangleFitsImage(shot, candidate) ? candidate : null;
+      };
+      const direct = rectangleAt(target);
+      if (direct) return direct;
+      // Out of bounds: slide along the path from the last valid handle position toward the cursor.
       let lowerScale = 0;
       let upperScale = 1;
       let fitted = null;
       for (let attempt = 0; attempt < 24; attempt++) {
         const scale = (lowerScale + upperScale) / 2;
-        const moving = { x: fixed.x + dx * scale, y: fixed.y + dy * scale };
-        const topLeft = handle === 0 ? moving : fixed;
-        const bottomRight = handle === 0 ? fixed : moving;
-        const candidate = rectangleFromDiagonal(topLeft, bottomRight);
-        if (candidate && rectangleFitsImage(shot, candidate)) {
+        const candidate = rectangleAt({
+          x: current.x + (target.x - current.x) * scale,
+          y: current.y + (target.y - current.y) * scale
+        });
+        if (candidate) {
           lowerScale = scale;
           fitted = candidate;
         } else upperScale = scale;

@@ -1618,11 +1618,68 @@
     state.cvReady = true;
     $("#cvStatus").textContent = "OpenCV ready";
     $("#cvStatus").classList.add("ready");
-    if (state.mode === "process") updateProcessState();
+    if (state.mode === "process") {
+      updateProcessState();
+      queueProcessPreview(true);
+    }
     if (state.stream) $("#captureStatus").textContent = "Camera and image processing ready.";
   }
   initializeOpenCV();
   requestAnimationFrame(capturePreviewLoop);
   updateBurstFrameCountDisplay();
   updateCounts();
+
+  const persistence = window.NegativeLabPersistence({ notify });
+
+  function captureSession() {
+    return {
+      rolls: state.rolls,
+      rollIndex: state.rollIndex,
+      selectedShotIndex: state.selectedShotIndex,
+      mode: state.mode,
+      burstFrameCount: state.burstFrameCount,
+      livePreviewAdjustments: state.livePreviewAdjustments,
+      settings: {
+        invert: $("#invertToggle").checked,
+        zlog2: $("#zlog2Toggle").checked,
+        zlog2Gamut: $("#zlog2Gamut").value,
+        rawExport: $("#rawExportToggle").getAttribute("aria-pressed") === "true"
+      }
+    };
+  }
+
+  function applySession(session) {
+    const modes = ["setup", "capture", "review", "process"];
+    state.rolls = session.rolls;
+    state.rollIndex = clamp(Number(session.rollIndex) || 0, 0, state.rolls.length - 1);
+    state.selectedShotIndex = clamp(Number(session.selectedShotIndex) || 0, 0, Math.max(0, activeRoll().shots.length - 1));
+    setBurstFrameCount(Number(session.burstFrameCount));
+    const settings = session.settings || {};
+    $("#invertToggle").checked = settings.invert !== false;
+    $("#zlog2Toggle").checked = settings.zlog2 === true;
+    $("#zlog2Gamut").value = settings.zlog2Gamut === "rec709" ? "rec709" : "zcam";
+    $("#zlog2GamutControl").hidden = !$("#zlog2Toggle").checked;
+    $("#rawExportToggle").setAttribute("aria-pressed", String(settings.rawExport !== false));
+    state.livePreviewAdjustments = normalizeAdjustments(session.livePreviewAdjustments);
+    applyColorProfile("live", state.livePreviewAdjustments);
+    updateCounts();
+    setMode(modes.includes(session.mode) ? session.mode : "setup");
+    updateExportState();
+    const frameCount = state.rolls.reduce((total, roll) => total + roll.shots.length, 0);
+    notify(`Restored ${frameCount} frame(s) across ${state.rolls.length} roll(s) from your last session.`);
+  }
+
+  async function restoreSession() {
+    let session = null;
+    try {
+      session = await persistence.load();
+    } catch (error) {
+      console.error("Saved session could not be opened", error);
+      notify("The saved session could not be opened, so autosave is off for this page.", true);
+      return;
+    }
+    if (session?.rolls?.length) applySession(session);
+    persistence.startAutosave(captureSession);
+  }
+  restoreSession();
 })();

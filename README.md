@@ -25,7 +25,7 @@ Allow camera access when prompted. Capture can begin as soon as the camera is re
 2. **Capture**
    - Press **Capture burst** or the Space key. Captured frames use a default inset crop that you can adjust manually in Crop.
    - Press **Import image** to add PNG, JPEG, or WebP files as single-frame shots covering the whole image, for reprocessing exported assets. Exported positives are already inverted, so turn off **Invert negative** for those rolls.
-   - Create and name multiple rolls as needed. Captures stay in memory for the current page session.
+   - Create and name multiple rolls as needed. Captures are autosaved in this browser and restored when the page is reopened.
 3. **Crop**
    - Select a shot and adjust its crop using four independent corners, **2 corners** for a rectangular crop using the top-left and bottom-right handles, or the film-edge guides for a 3:2 crop.
    - Flip the result horizontally or vertically, reset to the default crop, or remove a failed or duplicate shot.
@@ -45,7 +45,7 @@ The right panel changes with the active workflow step. The app fills the browser
 ## Data, privacy, and backups
 
 - Camera frames are processed in the browser; this app does not upload captured images to a Negative Lab server.
-- Captured frames and edits exist only in memory for the current page session. Export processed PNGs before reloading or closing the page; there is no session restore or raw-data backup.
+- Captured frames, crops, roll settings, and develop adjustments are autosaved to this browser's IndexedDB storage and restored when the page is reopened. Saved data stays on this device and is deleted when you remove a frame or clear this site's data. Private windows and low disk space can prevent saving; export processed PNGs as a backup. The camera must be started again after reopening.
 - Shots store one averaged 4K 8-bit RGBA image (about 32 MiB), regardless of whether Z-Log2 decoding is enabled or how many frames were captured. Use a lower camera resolution if the browser becomes unstable.
 - Tailwind CSS 3.4.17 and OpenCV.js 4.13.0 are loaded from their CDNs first and fall back to `vendor/`; OpenCV.js includes its WebAssembly payload. License notices are in `vendor/LICENSES/`.
 
@@ -70,6 +70,7 @@ js/
     image-processing.js          Crop and image pipeline
     review.js                    Crop and shot-review interface
     export.js                    PNG and ZIP export
+    persistence.js               Autosave and session restore (IndexedDB)
 ```
 
 The scripts are loaded directly by `index.html`; no bundler or package manager is required.
