@@ -158,7 +158,7 @@
         }
         if (asZip) {
           for (const roll of rolls) {
-            const rollFolder = `${pad(roll.number)}_${safeName(roll.name || `Roll ${pad(roll.number)}`)}`;
+            const rollFolder = `${safeName(roll.name || `Roll ${pad(roll.number)}`)}`;
             const profile = profileFromSettings(roll.adjustments);
             files.push({
               name: `${rollFolder}/negatives/Roll ${pad(roll.number)}.txt`,
