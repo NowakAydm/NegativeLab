@@ -107,7 +107,7 @@
   const { processShot, applyAdjustments, applyAdjustmentsSync, buildCurveInputLuts, buildCssPreviewTables } = imageProcessor;
   function pixelsForDisplay(shot) { return shot.pixels; }
   const { updateExportState } = window.NegativeLabExport({
-    state, $, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings
+    state, $, activeRoll, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings
   });
   const { renderReview } = window.NegativeLabReview({
     state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail,
@@ -699,6 +699,7 @@
       }
       const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
       activeRoll().shots.push(shot);
+      persistence.saveNow();
       state.selectedShotIndex = activeRoll().shots.length - 1;
       $("#scanFlash").classList.remove("fire");
       void $("#scanFlash").offsetWidth;
@@ -792,6 +793,7 @@
           importedFrom: file.name
         });
         imported++;
+        persistence.saveNow();
       } catch (error) {
         notify(`Could not import ${file.name}: ${error.message}`, true);
       } finally {

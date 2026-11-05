@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  window.NegativeLabExport = function createExporter({ state, $, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings }) {
+  window.NegativeLabExport = function createExporter({ state, $, activeRoll, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings }) {
     const encoder = new TextEncoder();
     const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
       let value = index;
@@ -92,7 +92,7 @@
     }
 
     async function exportRoll(asZip = false) {
-      const rolls = state.rolls.filter((roll) => roll.shots.length);
+      const rolls = (asZip ? [activeRoll()] : state.rolls).filter((roll) => roll?.shots.length);
       const totalShots = rolls.reduce((total, roll) => total + roll.shots.length, 0);
       if (!totalShots) { notify("There are no captured frames to export.", true); return; }
       const includeRaw = $("#rawExportToggle").getAttribute("aria-pressed") === "true";
@@ -169,7 +169,7 @@
             updateProgress(progressId, `Added color profile · Roll ${pad(roll.number)}`, completed / totalFiles * 100);
           }
           const zip = await createZip(files);
-          const archiveName = `${safeName(rolls.length === 1 ? rolls[0].name || `Roll ${pad(rolls[0].number)}` : "NegativeLab_Export")}.zip`;
+          const archiveName = `${safeName(rolls[0].name || `Roll ${pad(rolls[0].number)}`)}.zip`;
           downloadBlob(zip, archiveName);
           $("#exportStatus").textContent = `Exported ${totalPngs} PNG(s) and ${rolls.length} color profile(s) across ${rolls.length} roll(s) in ${archiveName}.`;
         } else if (!directory) {

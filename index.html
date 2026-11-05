@@ -28,6 +28,16 @@
       </feComponentTransfer>
     </filter>
   </svg>
+  <div id="folderOverlay" class="folder-overlay" role="dialog" aria-modal="true" aria-labelledby="folderOverlayTitle" hidden>
+    <div class="folder-overlay-panel">
+      <div id="folderOverlayTitle" class="display-type text-xl text-[var(--ink)]">Reconnect your save folder</div>
+      <p class="subtle text-xs mt-3">Captures are saved to a folder on this computer. Allow access to restore your session.</p>
+      <div class="flex gap-2 mt-5">
+        <button id="reconnectFolderButton" class="primary-button" type="button">Reconnect save folder</button>
+        <button id="useBrowserStorageButton" class="secondary-button" type="button">Use browser storage</button>
+      </div>
+    </div>
+  </div>
   <div class="app-shell">
     <header class="topbar flex items-center justify-between gap-4 px-5 md:px-8">
       <div class="flex items-center gap-3">
@@ -49,6 +59,7 @@
           <div class="text-xs font-bold">#<span id="headerRoll">1</span> <span class="subtle">/ Shot</span> <span
               id="headerShot">1</span></div>
         </div>
+        <button id="saveFolderButton" class="secondary-button" type="button" hidden>Choose save folder</button>
         <button id="doneButton" class="primary-button">Continue to Capture →</button>
       </div>
     </header>

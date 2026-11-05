@@ -6,16 +6,28 @@
   const SESSION_KEY = "current";
   const SESSION_VERSION = 1;
   const AUTOSAVE_INTERVAL_MS = 2000;
+  const DIRECTORY_KEY = "saveFolder";
+  const SESSION_FILE = "session.json";
+  const SHOTS_DIR = "shots";
+  const supportsFolders = typeof window.showDirectoryPicker === "function";
 
-  // Session metadata lives in the "session" store; shot pixel buffers live in "shots", keyed by shot id.
+  // Backends: a user-chosen save folder (session.json plus shots/<id>.rgba) or IndexedDB as fallback.
   // Pixels are never edited after capture, so each buffer is written once and deleted when its shot is removed.
   window.NegativeLabPersistence = function createPersistence({ notify }) {
     let databasePromise = null;
     const storedPixelIds = new Set();
     let lastSavedJson = null;
-    let saving = false;
+    let chain = Promise.resolve();
+    let saveQueued = false;
     let saveFailureReported = false;
     let buildSession = null;
+    let storedHandle = null;
+    let folder = null;
+    let active = null;
+    const connectButton = document.querySelector("#saveFolderButton");
+    const folderOverlay = document.querySelector("#folderOverlay");
+    const reconnectButton = document.querySelector("#reconnectFolderButton");
+    const browserButton = document.querySelector("#useBrowserStorageButton");
 
     function openDatabase() {
       databasePromise ||= new Promise((resolve, reject) => {
@@ -60,92 +72,262 @@
       console.error("Session could not be saved", error);
       if (saveFailureReported) return;
       saveFailureReported = true;
-      notify("This session could not be saved in browser storage. Export your work to keep it.", true);
+      const message = {
+        NotAllowedError: "Save folder access was lost. Reload the page and reconnect the folder.",
+        InvalidStateError: "The save folder changed while saving. Close other tabs of this page or programs using the folder, then reload."
+      }[error.name] || "This session could not be saved. Export your work to keep it.";
+      notify(message, true);
     }
 
-    async function save() {
-      if (!buildSession || saving) return;
-      saving = true;
-      let transaction = null;
+    // Writes run one at a time, in order, so a folder switch can't interleave with an autosave.
+    function enqueue(task) {
+      chain = chain.then(task);
+      return chain;
+    }
+
+    function saveNow() {
+      if (saveQueued) return chain;
+      saveQueued = true;
+      return enqueue(async () => {
+        saveQueued = false;
+        await writeChanges();
+      });
+    }
+
+    async function writeChanges() {
+      if (!buildSession || !active) return;
       try {
         const session = buildSession();
         const shots = session.rolls.flatMap((roll) => roll.shots);
         shots.forEach((shot) => {
           shot.id ||= createId();
         });
-        const record = {
-          ...session,
-          version: SESSION_VERSION,
-          rolls: session.rolls.map((roll) => ({
-            ...roll,
-            shots: roll.shots.map(({ pixels, ...metadata }) => metadata)
-          }))
-        };
+        const record = toRecord(session);
         const json = JSON.stringify(record);
         if (json === lastSavedJson) return;
 
         const liveIds = new Set(shots.map((shot) => shot.id));
         const newShots = shots.filter((shot) => !storedPixelIds.has(shot.id));
         const removedIds = [...storedPixelIds].filter((id) => !liveIds.has(id));
-
-        const database = await openDatabase();
-        transaction = database.transaction(["shots", "session"], "readwrite");
-        const shotStore = transaction.objectStore("shots");
-        newShots.forEach((shot) => shotStore.put({ id: shot.id, width: shot.width, height: shot.height, pixels: shot.pixels }));
-        removedIds.forEach((id) => shotStore.delete(id));
-        transaction.objectStore("session").put(record, SESSION_KEY);
-        await transactionDone(transaction);
+        await active.write({ newShots, removedIds, record });
 
         newShots.forEach((shot) => storedPixelIds.add(shot.id));
         removedIds.forEach((id) => storedPixelIds.delete(id));
         lastSavedJson = json;
         saveFailureReported = false;
       } catch (error) {
-        try { transaction?.abort(); } catch (abortError) { /* already finished */ }
         reportFailure(error);
-      } finally {
-        saving = false;
+      }
+    }
+
+    function toRecord(session) {
+      return {
+        ...session,
+        version: SESSION_VERSION,
+        rolls: session.rolls.map((roll) => ({
+          ...roll,
+          shots: roll.shots.map(({ pixels, ...metadata }) => metadata)
+        }))
+      };
+    }
+
+    function isValidRecord(record) {
+      return record?.version === SESSION_VERSION && Array.isArray(record.rolls);
+    }
+
+    function shotFileName(id) {
+      return `${id}.rgba`;
+    }
+
+    function missingAsNull(error) {
+      if (error.name === "NotFoundError") return null;
+      throw error;
+    }
+
+    // Fresh handles on each attempt, since a handle cached before an external change keeps failing.
+    async function writeFile(directory, name, data) {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const file = await directory.getFileHandle(name, { create: true });
+          const writable = await file.createWritable();
+          try {
+            await writable.write(data);
+            await writable.close();
+            return;
+          } catch (error) {
+            await writable.abort().catch(() => {});
+            throw error;
+          }
+        } catch (error) {
+          if (error.name !== "InvalidStateError" || attempt >= 3) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+        }
+      }
+    }
+
+    const browserBackend = {
+      async read() {
+        const database = await openDatabase();
+        const transaction = database.transaction(["shots", "session"], "readonly");
+        const [record, shotRecords] = await Promise.all([
+          requestResult(transaction.objectStore("session").get(SESSION_KEY)),
+          requestResult(transaction.objectStore("shots").getAll())
+        ]);
+        if (!isValidRecord(record)) return null;
+        const pixelsById = new Map(shotRecords.filter(Boolean).map((shot) => [shot.id, shot.pixels]));
+        return { record, pixelsById };
+      },
+      async write({ newShots, removedIds, record }) {
+        const database = await openDatabase();
+        const transaction = database.transaction(["shots", "session"], "readwrite");
+        try {
+          const shotStore = transaction.objectStore("shots");
+          newShots.forEach((shot) => shotStore.put({ id: shot.id, width: shot.width, height: shot.height, pixels: shot.pixels }));
+          removedIds.forEach((id) => shotStore.delete(id));
+          transaction.objectStore("session").put(record, SESSION_KEY);
+          await transactionDone(transaction);
+        } catch (error) {
+          try { transaction.abort(); } catch (abortError) { /* already finished */ }
+          throw error;
+        }
+      }
+    };
+
+    // Browsers commit each file on close, so a crash mid-write keeps the previous version.
+    const folderBackend = {
+      async read() {
+        const sessionFile = await folder.getFileHandle(SESSION_FILE).catch(missingAsNull);
+        if (!sessionFile) return null;
+        const record = JSON.parse(await (await sessionFile.getFile()).text());
+        if (!isValidRecord(record)) return null;
+        const shotsDir = await folder.getDirectoryHandle(SHOTS_DIR).catch(missingAsNull);
+        const pixelsById = new Map();
+        for (const roll of record.rolls) {
+          for (const shot of roll.shots) {
+            const file = await shotsDir?.getFileHandle(shotFileName(shot.id)).catch(missingAsNull);
+            if (file) pixelsById.set(shot.id, new Uint8ClampedArray(await (await file.getFile()).arrayBuffer()));
+          }
+        }
+        return { record, pixelsById };
+      },
+      async write({ newShots, removedIds, record }) {
+        const shotsDir = await folder.getDirectoryHandle(SHOTS_DIR, { create: true });
+        for (const shot of newShots) await writeFile(shotsDir, shotFileName(shot.id), shot.pixels);
+        await writeFile(folder, SESSION_FILE, JSON.stringify(record));
+        for (const id of removedIds) await shotsDir.removeEntry(shotFileName(id)).catch(missingAsNull);
+      }
+    };
+
+    async function saveFolderHandle(handle) {
+      const database = await openDatabase();
+      const transaction = database.transaction("session", "readwrite");
+      transaction.objectStore("session").put(handle, DIRECTORY_KEY);
+      await transactionDone(transaction);
+    }
+
+    async function loadFolderHandle() {
+      if (!supportsFolders) return null;
+      const database = await openDatabase();
+      const transaction = database.transaction("session", "readonly");
+      return (await requestResult(transaction.objectStore("session").get(DIRECTORY_KEY))) || null;
+    }
+
+    async function hasAccess(handle) {
+      return (await handle.queryPermission({ mode: "readwrite" })) === "granted";
+    }
+
+    function askToReconnect(handle) {
+      return new Promise((resolve) => {
+        folderOverlay.hidden = false;
+        const finish = (granted) => {
+          folderOverlay.hidden = true;
+          if (!granted) notify("Save folder access was not granted, so captures are saved in browser storage.", true);
+          resolve(granted);
+        };
+        reconnectButton.addEventListener("click", async () => {
+          finish((await handle.requestPermission({ mode: "readwrite" }).catch(() => "denied")) === "granted");
+        }, { once: true });
+        browserButton.addEventListener("click", () => finish(false), { once: true });
+      });
+    }
+
+    async function readSession(backend) {
+      const stored = await backend.read();
+      storedPixelIds.clear();
+      lastSavedJson = null;
+      if (!stored) return null;
+      let missingCount = 0;
+      const rolls = stored.record.rolls.map((roll) => ({
+        ...roll,
+        shots: roll.shots.flatMap((metadata) => {
+          const pixels = stored.pixelsById.get(metadata.id);
+          if (!pixels) {
+            missingCount++;
+            return [];
+          }
+          storedPixelIds.add(metadata.id);
+          return [{ ...metadata, pixels }];
+        })
+      }));
+      if (missingCount) console.warn(`${missingCount} saved frame(s) had no image data and were skipped.`);
+      return { ...stored.record, rolls };
+    }
+
+    function updateFolderButton() {
+      connectButton.hidden = !supportsFolders;
+      if (active === folderBackend) connectButton.textContent = `Save folder: ${folder.name}`;
+      else connectButton.textContent = storedHandle ? "Reconnect save folder" : "Choose save folder";
+    }
+
+    async function useFolder(handle) {
+      await saveFolderHandle(handle);
+      storedHandle = handle;
+      await enqueue(async () => {
+        folder = handle;
+        active = folderBackend;
+        storedPixelIds.clear();
+        lastSavedJson = null;
+        await writeChanges();
+      });
+      updateFolderButton();
+      notify(`Saving captures to the folder "${handle.name}".`);
+    }
+
+    async function onConnectClick() {
+      try {
+        const reconnected = active !== folderBackend && storedHandle && (await storedHandle.requestPermission({ mode: "readwrite" })) === "granted";
+        await useFolder(reconnected ? storedHandle : await window.showDirectoryPicker({ mode: "readwrite" }));
+      } catch (error) {
+        if (error.name !== "AbortError") notify(`The save folder could not be used: ${error.message}`, true);
       }
     }
 
     async function load() {
       navigator.storage?.persist?.().catch(() => {});
-      const database = await openDatabase();
-      const transaction = database.transaction(["shots", "session"], "readonly");
-      const [record, shotRecords] = await Promise.all([
-        requestResult(transaction.objectStore("session").get(SESSION_KEY)),
-        requestResult(transaction.objectStore("shots").getAll())
-      ]);
-      if (!record || record.version !== SESSION_VERSION || !Array.isArray(record.rolls)) return null;
-
-      const shotsById = new Map(shotRecords.map((shotRecord) => [shotRecord.id, shotRecord]));
-      let missingCount = 0;
-      const rolls = record.rolls.map((roll) => ({
-        ...roll,
-        shots: roll.shots.flatMap((metadata) => {
-          const stored = shotsById.get(metadata.id);
-          if (!stored) {
-            missingCount++;
-            return [];
-          }
-          storedPixelIds.add(metadata.id);
-          return [{ ...metadata, pixels: stored.pixels }];
-        })
-      }));
-      if (missingCount) console.warn(`${missingCount} saved frame(s) had no image data and were skipped.`);
-      lastSavedJson = null;
-      return { ...record, rolls };
+      connectButton.disabled = true;
+      try {
+        storedHandle = await loadFolderHandle().catch(() => null);
+        const useFolderStore = storedHandle && ((await hasAccess(storedHandle)) || (await askToReconnect(storedHandle)));
+        if (useFolderStore) folder = storedHandle;
+        active = useFolderStore ? folderBackend : browserBackend;
+        updateFolderButton();
+        return await readSession(active);
+      } finally {
+        connectButton.disabled = false;
+      }
     }
 
     function startAutosave(getSession) {
       buildSession = getSession;
-      setInterval(save, AUTOSAVE_INTERVAL_MS);
+      setInterval(saveNow, AUTOSAVE_INTERVAL_MS);
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "hidden") save();
+        if (document.visibilityState === "hidden") saveNow();
       });
-      window.addEventListener("pagehide", save);
+      window.addEventListener("pagehide", saveNow);
     }
 
-    return { load, startAutosave };
+    connectButton.addEventListener("click", onConnectClick);
+
+    return { load, startAutosave, saveNow };
   };
 })();

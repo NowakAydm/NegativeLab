@@ -25,7 +25,7 @@ Allow camera access when prompted. Capture can begin as soon as the camera is re
 2. **Capture**
    - Press **Capture burst** or the Space key. Captured frames use a default inset crop that you can adjust manually in Crop.
    - Press **Import image** to add PNG, JPEG, or WebP files as single-frame shots covering the whole image, for reprocessing exported assets. Exported positives are already inverted, so turn off **Invert negative** for those rolls.
-   - Create and name multiple rolls as needed. Captures are autosaved in this browser and restored when the page is reopened.
+   - Create and name multiple rolls as needed. Captures are saved to your chosen save folder (or browser storage) and restored when the page is reopened.
 3. **Crop**
    - Select a shot and adjust its crop using four independent corners, **2 corners** for a rectangular crop using the top-left and bottom-right handles, or the film-edge guides for a 3:2 crop.
    - Flip the result horizontally or vertically, reset to the default crop, or remove a failed or duplicate shot.
@@ -37,7 +37,7 @@ Allow camera access when prompted. Capture can begin as soon as the camera is re
    - Choose whether to invert the negative, desaturate the final output for black-and-white rolls, and select the output gamma.
    - Frames in a burst are averaged as they are captured, so each shot keeps one averaged 8-bit image. When enabled, Z-Log2 decoding and gamut conversion are applied during image adjustment; raw-negative exports retain the captured values.
    - Save and load color-adjustment profiles as `.txt` files.
-   - Export all rolls as individual PNG files or as one ZIP archive using the controls below the preview.
+   - Export all rolls as individual PNG files, or export only the currently opened roll as one ZIP archive, using the controls below the preview.
    - Raw negatives are included by default; switch **Also export raw negatives** off to omit them. ZIP exports place included negatives and each roll’s global color profile (`Roll XX.txt`) in a `negatives` subfolder.
 
 The right panel changes with the active workflow step. The app fills the browser viewport without page-level scrolling; the roll/frame browser and side-panel controls scroll within their panes.
@@ -45,7 +45,7 @@ The right panel changes with the active workflow step. The app fills the browser
 ## Data, privacy, and backups
 
 - Camera frames are processed in the browser; this app does not upload captured images to a Negative Lab server.
-- Captured frames, crops, roll settings, and develop adjustments are autosaved to this browser's IndexedDB storage and restored when the page is reopened. Saved data stays on this device and is deleted when you remove a frame or clear this site's data. Private windows and low disk space can prevent saving; export processed PNGs as a backup. The camera must be started again after reopening.
+- Captured frames, crops, roll settings, and develop adjustments are saved as each capture happens and every 2 seconds for edits. Click **Choose save folder** to store them on disk: each frame is written to `shots/` in that folder, and the session is written to `session.json`. Chrome and Edge support save folders; after reopening the page, allow access when prompted to restore. Without a save folder, data goes to this browser's IndexedDB storage. Saved data stays on this device and is deleted when you remove a frame or clear this site's data. Private windows and low disk space can prevent saving; export processed PNGs as a backup. The camera must be started again after reopening.
 - Shots store one averaged 4K 8-bit RGBA image (about 32 MiB), regardless of whether Z-Log2 decoding is enabled or how many frames were captured. Use a lower camera resolution if the browser becomes unstable.
 - Tailwind CSS 3.4.17 and OpenCV.js 4.13.0 are loaded from their CDNs first and fall back to `vendor/`; OpenCV.js includes its WebAssembly payload. License notices are in `vendor/LICENSES/`.
 
@@ -70,7 +70,7 @@ js/
     image-processing.js          Crop and image pipeline
     review.js                    Crop and shot-review interface
     export.js                    PNG and ZIP export
-    persistence.js               Autosave and session restore (IndexedDB)
+    persistence.js               Autosave and session restore (save folder or IndexedDB)
 ```
 
 The scripts are loaded directly by `index.html`; no bundler or package manager is required.

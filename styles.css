@@ -994,6 +994,26 @@ input[type="range"] {
   border-color: var(--coral);
 }
 
+.folder-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, .72);
+}
+
+.folder-overlay[hidden] {
+  display: none;
+}
+
+.folder-overlay-panel {
+  max-width: min(440px, calc(100vw - 40px));
+  border: 1px solid #647264;
+  background: #202722;
+  padding: 24px;
+}
+
 .dependency-error {
   position: fixed;
   z-index: 30;
