@@ -343,7 +343,7 @@
     renderFilmList();
   }
 
-  document.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+  document.querySelectorAll("button[data-mode]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
 
   document.querySelectorAll("[data-resize]").forEach((resizer) => {
     let startX = 0;
