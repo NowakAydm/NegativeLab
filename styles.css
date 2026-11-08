@@ -378,7 +378,7 @@ button {
   overflow: hidden;
 }
 
-.capture-layout.review-mode #filmList {
+.capture-layout.review-mode #rollList {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -612,6 +612,53 @@ button {
   display: flex;
   flex-direction: column;
   gap: 9px;
+}
+
+.roll-group {
+  border: 1px solid transparent;
+  background: #171b18;
+}
+
+.roll-group.selected {
+  border-color: #657160;
+}
+
+.roll-item {
+  display: grid;
+  grid-template-columns: auto 30px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  background: transparent;
+  text-align: left;
+}
+
+.roll-item:hover,
+.roll-group.selected .roll-item {
+  background: #1d231e;
+}
+
+.roll-chevron {
+  color: var(--lime);
+  font-size: 15px;
+}
+
+.roll-shots {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-top: 1px solid var(--line);
+  padding: 7px;
+}
+
+.roll-shots .film-item {
+  grid-template-columns: 58px 1fr auto;
+  padding: 6px;
+}
+
+.roll-shots .film-thumb {
+  width: 58px;
 }
 
 .film-item {

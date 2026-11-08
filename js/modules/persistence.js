@@ -9,6 +9,10 @@
   const DIRECTORY_KEY = "saveFolder";
   const SESSION_FILE = "session.json";
   const SHOTS_DIR = "shots";
+  const BACKUPS_DIR = "backups";
+  const BACKUP_INTERVAL_MS = 60 * 1000;
+  const BACKUPS_TO_KEEP = 12;
+  const BACKUP_PATTERN = /^session-.*\.json$/;
   const supportsFolders = typeof window.showDirectoryPicker === "function";
 
   // Backends: a user-chosen save folder (session.json plus shots/<id>.rgba) or IndexedDB as fallback.
@@ -20,6 +24,7 @@
     let chain = Promise.resolve();
     let saveQueued = false;
     let saveFailureReported = false;
+    let lastBackupAt = 0;
     let buildSession = null;
     let storedHandle = null;
     let folder = null;
@@ -144,6 +149,51 @@
       throw error;
     }
 
+    function fileStamp() {
+      return new Date().toISOString().replace(/[:.]/g, "-");
+    }
+
+    function parseRecord(text) {
+      try {
+        const record = JSON.parse(text);
+        return isValidRecord(record) ? record : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function listBackupNames(backupsDir) {
+      const names = [];
+      for await (const entry of backupsDir.values()) {
+        if (entry.kind === "file" && BACKUP_PATTERN.test(entry.name)) names.push(entry.name);
+      }
+      return names.sort();
+    }
+
+    async function readNewestBackup() {
+      const backupsDir = await folder.getDirectoryHandle(BACKUPS_DIR).catch(missingAsNull);
+      if (!backupsDir) return null;
+      for (const name of (await listBackupNames(backupsDir)).reverse()) {
+        const record = parseRecord(await (await (await backupsDir.getFileHandle(name)).getFile()).text());
+        if (record) return { name, record };
+      }
+      return null;
+    }
+
+    // Snapshots session.json into backups/ at most once per interval; failures never block autosave.
+    async function backupIfDue(json) {
+      if (Date.now() - lastBackupAt < BACKUP_INTERVAL_MS) return;
+      try {
+        const backupsDir = await folder.getDirectoryHandle(BACKUPS_DIR, { create: true });
+        await writeFile(backupsDir, `session-${fileStamp()}.json`, json);
+        lastBackupAt = Date.now();
+        const names = await listBackupNames(backupsDir);
+        for (const name of names.slice(0, -BACKUPS_TO_KEEP)) await backupsDir.removeEntry(name).catch(missingAsNull);
+      } catch (error) {
+        console.warn("Periodic session backup failed", error);
+      }
+    }
+
     // Fresh handles on each attempt, since a handle cached before an external change keeps failing.
     async function writeFile(directory, name, data) {
       for (let attempt = 1; ; attempt++) {
@@ -197,9 +247,24 @@
     const folderBackend = {
       async read() {
         const sessionFile = await folder.getFileHandle(SESSION_FILE).catch(missingAsNull);
-        if (!sessionFile) return null;
-        const record = JSON.parse(await (await sessionFile.getFile()).text());
-        if (!isValidRecord(record)) return null;
+        let record = null;
+        if (sessionFile) {
+          const text = await (await sessionFile.getFile()).text();
+          record = parseRecord(text);
+          if (!record) {
+            // Keep the unreadable copy so autosave can't overwrite it.
+            const backupsDir = await folder.getDirectoryHandle(BACKUPS_DIR, { create: true });
+            await writeFile(backupsDir, `unreadable-${fileStamp()}.json`, text);
+          }
+        }
+        if (!record) {
+          const backup = await readNewestBackup();
+          if (backup) {
+            record = backup.record;
+            notify(`session.json could not be read, so the session was restored from backups/${backup.name}.`, true);
+          }
+        }
+        if (!record) return null;
         const shotsDir = await folder.getDirectoryHandle(SHOTS_DIR).catch(missingAsNull);
         const pixelsById = new Map();
         for (const roll of record.rolls) {
@@ -213,7 +278,9 @@
       async write({ newShots, removedIds, record }) {
         const shotsDir = await folder.getDirectoryHandle(SHOTS_DIR, { create: true });
         for (const shot of newShots) await writeFile(shotsDir, shotFileName(shot.id), shot.pixels);
-        await writeFile(folder, SESSION_FILE, JSON.stringify(record));
+        const json = JSON.stringify(record);
+        await writeFile(folder, SESSION_FILE, json);
+        await backupIfDue(json);
         for (const id of removedIds) await shotsDir.removeEntry(shotFileName(id)).catch(missingAsNull);
       }
     };

@@ -77,12 +77,12 @@
             </div>
             <span id="shotCount" class="badge" aria-label="Captured shot count">0</span>
           </div>
-          <div id="rollList" class="film-list mb-5" aria-label="Rolls"></div>
           <button id="nextRollButton" class="secondary-button mb-5 w-full">＋ New roll</button>
-          <div class="eyebrow mb-3">Frames in this roll</div>
-          <div id="filmList" class="film-list" aria-live="polite"></div>
-          <div id="emptyFilmList" class="border-t border-[var(--line)] py-5 text-xs subtle">Your captured frames will
-            appear here.</div>
+          <div class="capture-import-control mb-5">
+            <button id="importShotButton" class="secondary-button w-full" type="button">Import image</button>
+            <input id="importShotInput" type="file" accept="image/png,image/jpeg,image/webp" multiple class="hidden">
+          </div>
+          <div id="rollList" class="film-list" aria-label="Rolls" aria-live="polite"></div>
         </div>
       </aside>
       <div class="pane-resizer" role="separator" aria-label="Resize frame browser" aria-orientation="vertical"
@@ -129,8 +129,6 @@
             <div class="flex flex-wrap items-center gap-2">
               <button id="captureNowButton" class="primary-button" disabled><span id="captureBurstButtonLabel">Capture burst</span>
                 <kbd>(Space)</kbd></button>
-              <button id="importShotButton" class="secondary-button" type="button">Import image</button>
-              <input id="importShotInput" type="file" accept="image/png,image/jpeg,image/webp" multiple class="hidden">
             </div>
           </div>
         </section>
@@ -217,15 +215,6 @@
             <div class="mt-2 text-[10px] subtle">Stream: <span id="resolutionReadout">No stream</span></div>
             <div class="sidebar-control-section">
               <div class="eyebrow mb-3">Negative setup</div>
-              <label class="field-label flex items-center gap-2"><input id="zlog2Toggle" type="checkbox"> Decode Z-Log2 input</label>
-              <label id="zlog2GamutControl" class="block mt-3 text-xs">
-                <span class="field-label">Z-Log2 input gamut</span>
-                <select id="zlog2Gamut" class="field-select mt-1">
-                  <option value="zcam" selected>Z-Cam</option>
-                  <option value="rec709">Rec.709</option>
-                </select>
-              </label>
-              <p class="mt-2 text-[10px] subtle">Select the gamut encoded in the footage. Captures remain 8-bit.</p>
               <label for="burstFrameCount" class="field-label mt-4">Frames per burst</label>
               <div class="burst-count-control">
                 <button id="decreaseBurstFrameCount" class="burst-count-button" type="button"
@@ -348,13 +337,6 @@
                   <span class="mt-1 block text-xs subtle">Convert the final image to black and white.</span>
                 </span>
                 <input id="desaturateToggle" class="switch" type="checkbox" aria-label="Desaturate final output">
-              </label>
-              <label class="block py-3 text-xs">Output gamma
-                <select id="gammaSelect" class="field-select mt-2" aria-label="Select output gamma">
-                  <option value="srgb">sRGB</option>
-                  <option value="2.2">2.2</option>
-                  <option value="off">Off</option>
-                </select>
               </label>
             </div>
           </section>

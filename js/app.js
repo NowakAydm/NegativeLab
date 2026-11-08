@@ -4,7 +4,7 @@
   const { state, $, activeRoll, activeShot, pad, clamp, notify, beginProgress, updateProgress, endProgress } = window.NegativeLabCore;
   const MAX_BURST_FRAME_COUNT = 16;
   const imageProcessor = window.NegativeLabImageProcessing({ state, $, clamp });
-  const { rawToLinear, workingRange } = imageProcessor;
+  const { workingRange } = imageProcessor;
   const curveChannels = ["red", "green", "blue", "white"];
   const defaultCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }];
   const colorMasterCurve = () => [
@@ -34,7 +34,6 @@
     hue: 0,
     tint: 0,
     desaturate: mode === "bw",
-    gamma: "srgb",
     curvePresetVersion: 4,
     levels: cloneLevels(DEFAULT_LEVELS),
     curves: {
@@ -115,8 +114,7 @@
     applyPreviewAdjustments: (data, shot) => applyAdjustmentsSync(
       data,
       state.livePreviewAdjustments,
-      true,
-      $("#zlog2Toggle").checked
+      true
     ),
     updatePreviewFilter: () => updateCssPreview($("#reviewCanvas"))
   });
@@ -196,7 +194,11 @@
     $("#reviewCorrectionBody").classList.toggle("hidden", !$("#reviewNegativeToggle").checked);
     drawCurveEditors();
   }
-  $("#captureNegativeToggle").addEventListener("change", syncCorrectionPanels);
+  $("#captureNegativeToggle").addEventListener("change", () => {
+    syncCorrectionPanels();
+    state.capturePreviewKey = "";
+    state.capturePreviewSequence = (state.capturePreviewSequence || 0) + 1;
+  });
   $("#reviewNegativeToggle").addEventListener("change", syncCorrectionPanels);
 
   document.addEventListener("keydown", (event) => {
@@ -239,8 +241,10 @@
     const list = $("#rollList");
     list.replaceChildren();
     state.rolls.forEach((roll, index) => {
+      const group = document.createElement("div");
+      group.className = `roll-group${index === state.rollIndex ? " selected" : ""}`;
       const item = document.createElement("button");
-      item.className = `film-item${index === state.rollIndex ? " selected" : ""}`;
+      item.className = "roll-item";
       item.type = "button";
       item.setAttribute("aria-label", `Select roll ${roll.number}`);
       const marker = document.createElement("span");
@@ -254,7 +258,10 @@
       count.className = "mt-1 block text-[10px] subtle";
       count.textContent = `${roll.shots.length} frame(s)`;
       detail.append(name, count);
-      item.append(marker, detail);
+      const chevron = document.createElement("span");
+      chevron.className = "roll-chevron";
+      chevron.textContent = index === state.rollIndex ? "▾" : "▸";
+      item.append(chevron, marker, detail);
       item.addEventListener("click", () => {
         state.rollIndex = index;
         state.selectedShotIndex = Math.max(0, roll.shots.length - 1);
@@ -262,7 +269,36 @@
         if (state.mode === "review") renderReview();
         if (state.mode === "process") { updateProcessState(); updateProcessPreview(); }
       });
-      list.append(item);
+      group.append(item);
+      if (index === state.rollIndex) {
+        const shots = document.createElement("div");
+        shots.className = "roll-shots";
+        roll.shots.forEach((shot, shotIndex) => {
+          const shotItem = document.createElement("button");
+          shotItem.className = `film-item${shotIndex === state.selectedShotIndex && (state.mode === "review" || state.mode === "process") ? " selected" : ""}`;
+          shotItem.type = "button";
+          shotItem.setAttribute("aria-label", `Crop shot ${shot.number}`);
+          const image = document.createElement("img");
+          image.className = "film-thumb";
+          image.src = shot.thumbnail;
+          image.alt = "";
+          const shotDetail = document.createElement("span");
+          shotDetail.innerHTML = `<span class="eyebrow">Shot ${pad(shot.number)}</span><span class="mt-1 block text-[10px] subtle">${shot.frameCount} frame burst</span>`;
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = pad(shot.number);
+          shotItem.append(image, shotDetail, badge);
+          shotItem.dataset.shotIndex = shotIndex;
+          shotItem.addEventListener("click", () => {
+            if (state.mode === "process") { selectProcessShot(shotIndex); return; }
+            state.selectedShotIndex = shotIndex;
+            setMode("review");
+          });
+          shots.prepend(shotItem);
+        });
+        group.append(shots);
+      }
+      list.append(group);
     });
   }
 
@@ -275,44 +311,7 @@
   }
 
   function renderFilmList() {
-    const list = $("#filmList");
-    list.replaceChildren();
-    const shots = activeRoll().shots;
-    $("#emptyFilmList").classList.toggle("hidden", shots.length > 0);
-    shots.forEach((shot, index) => {
-      const item = document.createElement("button");
-      item.className = `film-item${index === state.selectedShotIndex && (state.mode === "review" || state.mode === "process") ? " selected" : ""}`;
-      item.type = "button";
-      item.setAttribute("aria-label", `Crop shot ${shot.number}`);
-      const image = document.createElement("img");
-      image.className = "film-thumb";
-      image.src = shot.thumbnail;
-      image.alt = "";
-      const detail = document.createElement("span");
-      detail.innerHTML = `<span class="eyebrow">Shot ${pad(shot.number)}</span><span class="mt-1 block text-[10px] subtle">${shot.frameCount} frame burst</span>`;
-      if (shot.flipX || shot.flipY) {
-        const flip = document.createElement("span");
-        flip.className = "flip-indicators";
-        flip.setAttribute("aria-label", `Flipped ${[shot.flipX && "horizontally", shot.flipY && "vertically"].filter(Boolean).join(" and ")}`);
-        flip.textContent = `${shot.flipX ? "↔" : ""}${shot.flipY ? "↕" : ""}`;
-        detail.append(flip);
-      }
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = pad(shot.number);
-      item.append(image, detail, badge);
-      item.dataset.shotIndex = index;
-      item.addEventListener("click", () => {
-        if (state.mode === "process") { selectProcessShot(index); return; }
-        state.selectedShotIndex = index;
-        setMode("review");
-        ensureShotVisible(list, list.querySelector(".film-item.selected"));
-      });
-      list.prepend(item);
-    });
-    if (state.mode === "review" || state.mode === "process") {
-      ensureShotVisible(list, list.querySelector(`[data-shot-index="${state.selectedShotIndex}"]`));
-    }
+    renderRollList();
   }
 
   function setMode(mode) {
@@ -608,7 +607,6 @@
     settings.mode = mode === "bw" ? "bw" : "color";
     settings.desaturate = settings.mode === "bw";
     settings.curves = defaultAdjustments(settings.mode).curves;
-    settings.gamma = defaultAdjustments(settings.mode).gamma;
     $("#capturePreviewMode").value = settings.mode;
     $("#reviewPreviewMode").value = settings.mode;
     drawCurveEditors();
@@ -1067,7 +1065,6 @@
       ? previewShot.adjustments
       : roll.adjustments;
     $("#desaturateToggle").checked = Boolean(currentSettings.desaturate);
-    $("#gammaSelect").value = currentSettings.gamma;
     document.querySelectorAll("[data-adjustment-key]").forEach((input) => {
       input.value = currentSettings[input.dataset.adjustmentKey];
       const valueLabel = input.parentElement.querySelector("[data-adjustment-value]");
@@ -1091,9 +1088,9 @@
   let adjustedPreviewInProgress = false;
   let adjustedPreviewPending = false;
 
-  function histogramForPreview(imageData, invert, settings, decodeZlog2) {
+  function histogramForPreview(imageData, invert, settings) {
     const histogram = Object.fromEntries(curveChannels.map((channel) => [channel, new Uint32Array(256)]));
-    const curveInputs = buildCurveInputLuts(settings, invert, decodeZlog2);
+    const curveInputs = buildCurveInputLuts(settings, invert);
     const sampleStep = Math.max(1, Math.ceil(Math.sqrt((imageData.width * imageData.height) / 65536)));
     for (let y = 0; y < imageData.height; y += sampleStep) {
       for (let x = 0; x < imageData.width; x += sampleStep) {
@@ -1118,11 +1115,10 @@
     if (!image) return;
     const settings = getAdjustmentSettings();
     const invert = $("#invertToggle").checked;
-    const decodeZlog2 = $("#zlog2Toggle").checked;
     const canvas = $("#processPreview");
     const context = canvas.getContext("2d");
     context.putImageData(image, 0, 0);
-    const tables = buildCssPreviewTables(settings, invert, decodeZlog2, $("#zlog2Gamut").value);
+    const tables = buildCssPreviewTables(settings, invert);
     Object.entries(tables.input).forEach(([channel, table]) => {
       $("#developPreviewInput" + channel[0].toUpperCase() + channel.slice(1)).setAttribute("tableValues", table);
     });
@@ -1136,7 +1132,7 @@
     const hueFilter = hue ? ` hue-rotate(${hue}deg)` : "";
     const desaturateFilter = settings.desaturate ? " grayscale(1)" : "";
     canvas.style.filter = `url(#developPreviewFilter)${hueFilter}${desaturateFilter}`;
-    state.previewHistogram = histogramForPreview(image, invert, settings, decodeZlog2);
+    state.previewHistogram = histogramForPreview(image, invert, settings);
     drawCurveEditors();
   }
 
@@ -1480,18 +1476,10 @@
     updateProcessState();
     queueProcessPreview();
   });
-  $("#gammaSelect").addEventListener("change", (event) => {
-    activeAdjustmentSettings().gamma = event.target.value;
+  $("#invertToggle").addEventListener("change", () => {
+    updateProcessState();
     queueProcessPreview();
   });
-  ["invertToggle", "zlog2Toggle", "zlog2Gamut"].forEach((id) => {
-    $("#" + id).addEventListener("change", () => {
-      $("#zlog2GamutControl").hidden = !$("#zlog2Toggle").checked;
-      updateProcessState();
-      queueProcessPreview();
-    });
-  });
-  $("#zlog2GamutControl").hidden = !$("#zlog2Toggle").checked;
 
   const PROFILE_FORMAT = "NegativeLabColorProfile";
 
@@ -1502,7 +1490,6 @@
       version: 1,
       mode: normalized.mode,
       desaturate: normalized.desaturate,
-      gamma: normalized.gamma,
       brightness: normalized.brightness,
       contrast: normalized.contrast,
       hue: normalized.hue,
@@ -1538,7 +1525,6 @@
     return {
       mode,
       desaturate,
-      gamma: ["srgb", "2.2", "off"].includes(profile.gamma) ? profile.gamma : defaults.gamma,
       brightness: number(profile.brightness, 0, -100, 100),
       contrast: number(profile.contrast, 100, 0, 200),
       hue: number(profile.hue, 0, -180, 180),
@@ -1629,6 +1615,7 @@
   initializeOpenCV();
   requestAnimationFrame(capturePreviewLoop);
   updateBurstFrameCountDisplay();
+  setMode(state.mode);
   updateCounts();
 
   const persistence = window.NegativeLabPersistence({ notify });
@@ -1643,8 +1630,6 @@
       livePreviewAdjustments: state.livePreviewAdjustments,
       settings: {
         invert: $("#invertToggle").checked,
-        zlog2: $("#zlog2Toggle").checked,
-        zlog2Gamut: $("#zlog2Gamut").value,
         rawExport: $("#rawExportToggle").getAttribute("aria-pressed") === "true"
       }
     };
@@ -1658,9 +1643,6 @@
     setBurstFrameCount(Number(session.burstFrameCount));
     const settings = session.settings || {};
     $("#invertToggle").checked = settings.invert !== false;
-    $("#zlog2Toggle").checked = settings.zlog2 === true;
-    $("#zlog2Gamut").value = settings.zlog2Gamut === "rec709" ? "rec709" : "zcam";
-    $("#zlog2GamutControl").hidden = !$("#zlog2Toggle").checked;
     $("#rawExportToggle").setAttribute("aria-pressed", String(settings.rawExport !== false));
     state.livePreviewAdjustments = normalizeAdjustments(session.livePreviewAdjustments);
     applyColorProfile("live", state.livePreviewAdjustments);
