@@ -219,13 +219,14 @@
       async read() {
         const database = await openDatabase();
         const transaction = database.transaction(["shots", "session"], "readonly");
-        const [record, shotRecords] = await Promise.all([
-          requestResult(transaction.objectStore("session").get(SESSION_KEY)),
-          requestResult(transaction.objectStore("shots").getAll())
-        ]);
-        if (!isValidRecord(record)) return null;
-        const pixelsById = new Map(shotRecords.filter(Boolean).map((shot) => [shot.id, shot.pixels]));
-        return { record, pixelsById };
+        const record = await requestResult(transaction.objectStore("session").get(SESSION_KEY));
+        return isValidRecord(record) ? { record } : null;
+      },
+      async readPixels(ids) {
+        const database = await openDatabase();
+        const transaction = database.transaction("shots", "readonly");
+        const records = await Promise.all(ids.map((id) => requestResult(transaction.objectStore("shots").get(id))));
+        return new Map(records.filter(Boolean).map((shot) => [shot.id, shot.pixels]));
       },
       async write({ newShots, removedIds, record }) {
         const database = await openDatabase();
@@ -265,15 +266,16 @@
           }
         }
         if (!record) return null;
+        return { record };
+      },
+      async readPixels(ids) {
         const shotsDir = await folder.getDirectoryHandle(SHOTS_DIR).catch(missingAsNull);
         const pixelsById = new Map();
-        for (const roll of record.rolls) {
-          for (const shot of roll.shots) {
-            const file = await shotsDir?.getFileHandle(shotFileName(shot.id)).catch(missingAsNull);
-            if (file) pixelsById.set(shot.id, new Uint8ClampedArray(await (await file.getFile()).arrayBuffer()));
-          }
+        for (const id of ids) {
+          const file = await shotsDir?.getFileHandle(shotFileName(id)).catch(missingAsNull);
+          if (file) pixelsById.set(id, new Uint8ClampedArray(await (await file.getFile()).arrayBuffer()));
         }
-        return { record, pixelsById };
+        return pixelsById;
       },
       async write({ newShots, removedIds, record }) {
         const shotsDir = await folder.getDirectoryHandle(SHOTS_DIR, { create: true });
@@ -323,21 +325,42 @@
       storedPixelIds.clear();
       lastSavedJson = null;
       if (!stored) return null;
+      const rollIndex = Number.isInteger(stored.record.rollIndex)
+        ? Math.max(0, Math.min(stored.record.rollIndex, stored.record.rolls.length - 1))
+        : 0;
+      const pixelsById = await backend.readPixels(stored.record.rolls[rollIndex]?.shots.map(({ id }) => id) || []);
       let missingCount = 0;
-      const rolls = stored.record.rolls.map((roll) => ({
+      const rolls = stored.record.rolls.map((roll, index) => ({
         ...roll,
         shots: roll.shots.flatMap((metadata) => {
-          const pixels = stored.pixelsById.get(metadata.id);
-          if (!pixels) {
+          storedPixelIds.add(metadata.id);
+          const pixels = index === rollIndex ? pixelsById.get(metadata.id) : null;
+          if (index === rollIndex && !pixels) {
             missingCount++;
             return [];
           }
-          storedPixelIds.add(metadata.id);
           return [{ ...metadata, pixels }];
         })
       }));
       if (missingCount) console.warn(`${missingCount} saved frame(s) had no image data and were skipped.`);
       return { ...stored.record, rolls };
+    }
+
+    async function loadRoll(session, rollIndex) {
+      const roll = session.rolls[rollIndex];
+      if (!roll) return;
+      const pixelsById = await active.readPixels(roll.shots.map(({ id }) => id));
+      let missingCount = 0;
+      roll.shots = roll.shots.flatMap((shot) => {
+        const pixels = pixelsById.get(shot.id);
+        if (!pixels) {
+          missingCount++;
+          return [];
+        }
+        storedPixelIds.add(shot.id);
+        return [{ ...shot, pixels }];
+      });
+      if (missingCount) console.warn(`${missingCount} saved frame(s) had no image data and were skipped.`);
     }
 
     function updateFolderButton() {
@@ -395,6 +418,6 @@
 
     connectButton.addEventListener("click", onConnectClick);
 
-    return { load, startAutosave, saveNow };
+    return { load, loadRoll, startAutosave, saveNow };
   };
 })();

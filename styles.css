@@ -623,6 +623,11 @@ button {
   border-color: #657160;
 }
 
+.roll-group.drop-target {
+  border-color: var(--lime);
+  box-shadow: inset 0 0 0 1px var(--lime);
+}
+
 .roll-item {
   display: grid;
   grid-template-columns: auto 30px 1fr;
@@ -677,6 +682,15 @@ button {
 .film-item.selected {
   border-color: #657160;
   background: #1d231e;
+}
+
+.film-item[draggable="true"] {
+  cursor: grab;
+}
+
+.film-item.dragging {
+  opacity: .45;
+  cursor: grabbing;
 }
 
 .film-thumb {

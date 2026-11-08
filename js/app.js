@@ -106,7 +106,8 @@
   const { processShot, applyAdjustments, applyAdjustmentsSync, buildCurveInputLuts, buildCssPreviewTables } = imageProcessor;
   function pixelsForDisplay(shot) { return shot.pixels; }
   const { updateExportState } = window.NegativeLabExport({
-    state, $, activeRoll, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings
+    state, $, activeRoll, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings,
+    loadRoll: (roll) => persistence.loadRoll({ rolls: state.rolls }, state.rolls.indexOf(roll))
   });
   const { renderReview } = window.NegativeLabReview({
     state, $, activeRoll, activeShot, pad, clamp, notify, setMode, updateCounts, renderFilmList, makeThumbnail,
@@ -243,6 +244,20 @@
     state.rolls.forEach((roll, index) => {
       const group = document.createElement("div");
       group.className = `roll-group${index === state.rollIndex ? " selected" : ""}`;
+      group.addEventListener("dragover", (event) => {
+        if (!draggedShot || draggedShot.rollIndex === index) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        group.classList.add("drop-target");
+      });
+      group.addEventListener("dragleave", (event) => {
+        if (!group.contains(event.relatedTarget)) group.classList.remove("drop-target");
+      });
+      group.addEventListener("drop", (event) => {
+        event.preventDefault();
+        group.classList.remove("drop-target");
+        moveShotToRoll(index);
+      });
       const item = document.createElement("button");
       item.className = "roll-item";
       item.type = "button";
@@ -262,12 +277,21 @@
       chevron.className = "roll-chevron";
       chevron.textContent = index === state.rollIndex ? "▾" : "▸";
       item.append(chevron, marker, detail);
-      item.addEventListener("click", () => {
-        state.rollIndex = index;
-        state.selectedShotIndex = Math.max(0, roll.shots.length - 1);
-        updateCounts();
-        if (state.mode === "review") renderReview();
-        if (state.mode === "process") { updateProcessState(); updateProcessPreview(); }
+      item.addEventListener("click", async () => {
+        if (index === state.rollIndex) return;
+        const previousRoll = activeRoll();
+        try {
+          await persistence.saveNow();
+          previousRoll.shots.forEach((shot) => { shot.pixels = null; });
+          await persistence.loadRoll({ rolls: state.rolls }, index);
+          state.rollIndex = index;
+          state.selectedShotIndex = Math.max(0, state.rolls[index].shots.length - 1);
+          updateCounts();
+          if (state.mode === "review") renderReview();
+          if (state.mode === "process") { updateProcessState(); updateProcessPreview(); }
+        } catch (error) {
+          notify(`Roll ${roll.number} could not be loaded: ${error.message}`, true);
+        }
       });
       group.append(item);
       if (index === state.rollIndex) {
@@ -277,6 +301,7 @@
           const shotItem = document.createElement("button");
           shotItem.className = `film-item${shotIndex === state.selectedShotIndex && (state.mode === "review" || state.mode === "process") ? " selected" : ""}`;
           shotItem.type = "button";
+          shotItem.draggable = true;
           shotItem.setAttribute("aria-label", `Crop shot ${shot.number}`);
           const image = document.createElement("img");
           image.className = "film-thumb";
@@ -289,6 +314,18 @@
           badge.textContent = pad(shot.number);
           shotItem.append(image, shotDetail, badge);
           shotItem.dataset.shotIndex = shotIndex;
+          shotItem.addEventListener("dragstart", (event) => {
+            draggedShot = { rollIndex: index, shotIndex };
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", `shot-${shot.id || shot.number}`);
+            shotItem.classList.add("dragging");
+          });
+          shotItem.addEventListener("dragend", () => {
+            draggedShot = null;
+            stopDragScroll();
+            shotItem.classList.remove("dragging");
+            document.querySelectorAll(".roll-group.drop-target").forEach((target) => target.classList.remove("drop-target"));
+          });
           shotItem.addEventListener("click", () => {
             if (state.mode === "process") { selectProcessShot(shotIndex); return; }
             state.selectedShotIndex = shotIndex;
@@ -300,6 +337,79 @@
       }
       list.append(group);
     });
+  }
+
+  let draggedShot = null;
+  const dragScroll = { direction: 0, pointerY: 0, frame: 0 };
+  const leftSidebar = $(".left-sidebar");
+  const leftSidebarInner = $(".left-sidebar .sidebar-inner");
+  const rollList = $("#rollList");
+
+  function dragScrollContainer() {
+    return rollList.scrollHeight > rollList.clientHeight ? rollList : leftSidebarInner;
+  }
+
+  function runDragScroll() {
+    if (!draggedShot || !dragScroll.direction) {
+      dragScroll.frame = 0;
+      return;
+    }
+    const container = dragScrollContainer();
+    const rect = container.getBoundingClientRect();
+    const edgeSize = rect.height * .25;
+    const distance = dragScroll.direction < 0
+      ? dragScroll.pointerY - rect.top
+      : rect.bottom - dragScroll.pointerY;
+    const speed = Math.max(2, Math.round((edgeSize - Math.max(0, distance)) / 8));
+    container.scrollTop += dragScroll.direction * speed;
+    dragScroll.frame = requestAnimationFrame(runDragScroll);
+  }
+
+  function updateDragScroll(event) {
+    if (!draggedShot) return;
+    const rect = dragScrollContainer().getBoundingClientRect();
+    const edgeSize = rect.height * .25;
+    dragScroll.pointerY = event.clientY;
+    dragScroll.direction = event.clientY < rect.top + edgeSize
+      ? -1
+      : event.clientY > rect.bottom - edgeSize
+        ? 1
+        : 0;
+    if (dragScroll.direction && !dragScroll.frame) dragScroll.frame = requestAnimationFrame(runDragScroll);
+  }
+
+  function stopDragScroll() {
+    dragScroll.direction = 0;
+    if (dragScroll.frame) cancelAnimationFrame(dragScroll.frame);
+    dragScroll.frame = 0;
+  }
+
+  leftSidebar.addEventListener("dragover", updateDragScroll);
+  leftSidebarInner.addEventListener("dragover", updateDragScroll);
+  rollList.addEventListener("dragover", updateDragScroll);
+  leftSidebar.addEventListener("dragleave", (event) => {
+    if (!event.relatedTarget || !leftSidebar.contains(event.relatedTarget)) stopDragScroll();
+  });
+
+  function moveShotToRoll(destinationIndex) {
+    if (!draggedShot || draggedShot.rollIndex === destinationIndex) return;
+    const sourceRoll = state.rolls[draggedShot.rollIndex];
+    const destinationRoll = state.rolls[destinationIndex];
+    const [shot] = sourceRoll.shots.splice(draggedShot.shotIndex, 1);
+    if (!shot) return;
+    destinationRoll.shots.push(shot);
+    state.rolls.forEach((roll) => roll.shots.forEach((rollShot, index) => { rollShot.number = index + 1; }));
+    state.rollIndex = destinationIndex;
+    state.selectedShotIndex = destinationRoll.shots.length - 1;
+    destinationRoll.previewShotIndex = state.selectedShotIndex;
+    draggedShot = null;
+    stopDragScroll();
+    updateCounts();
+    if (state.mode === "review") renderReview();
+    if (state.mode === "process") {
+      updateProcessState();
+      updateProcessPreview();
+    }
   }
 
   function ensureShotVisible(list, item) {
@@ -662,8 +772,7 @@
       let thumbnail = "";
       let width = 0;
       let height = 0;
-      // Running sum of the burst; only allocated when more than one frame is captured.
-      let sum = null;
+      // Accumulates into the first frame's buffer so a burst never holds more than two frame-sized arrays at once.
       let pixels = null;
       for (let index = 0; index < frameCount; index++) {
         if (index) await new Promise((resolve) => setTimeout(resolve, 60));
@@ -679,21 +788,14 @@
         ];
         if (!index) {
           thumbnail = makeThumbnail({ width: frame.width, height: frame.height, quad: corners }, captureCanvas);
-        }
-        if (frameCount === 1) {
           pixels = frame.pixels;
         } else {
-          sum ||= new Uint16Array(frame.pixels.length);
+          // Incremental mean: each shot keeps a single 8-bit RGBA asset, and the clamped array rounds each update.
+          const count = index + 1;
           const framePixels = frame.pixels;
-          for (let i = 0; i < sum.length; i++) sum[i] += framePixels[i];
+          for (let i = 0; i < pixels.length; i++) pixels[i] += (framePixels[i] - pixels[i]) / count;
         }
         $("#captureStatusCapture").textContent = `Capturing frame ${index + 1} of ${frameCount}`;
-      }
-      if (sum) {
-        // Averaging happens here so each shot keeps a single 8-bit RGBA asset instead of every burst frame.
-        pixels = new Uint8ClampedArray(sum.length);
-        for (let i = 0; i < sum.length; i++) pixels[i] = Math.round(sum[i] / frameCount);
-        sum = null;
       }
       const shot = { number: activeRoll().shots.length + 1, width, height, pixels, frameCount, quad: corners.map(({ x, y }) => ({ x, y })), autoQuad: corners.map(({ x, y }) => ({ x, y })), filmGuides: null, autoFilmGuides: null, filmCrop: null, adjustMode: "rectangle", flipX: false, flipY: false, thumbnail, createdAt: Date.now() };
       activeRoll().shots.push(shot);

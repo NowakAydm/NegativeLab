@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  window.NegativeLabExport = function createExporter({ state, $, activeRoll, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings }) {
+  window.NegativeLabExport = function createExporter({ state, $, activeRoll, pad, notify, beginProgress, updateProgress, endProgress, processShot, profileFromSettings, loadRoll }) {
     const encoder = new TextEncoder();
     const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
       let value = index;
@@ -124,6 +124,7 @@
         let completed = 0;
         let completedPngs = 0;
         for (const roll of rolls) {
+          if (roll.shots.some((shot) => !shot.pixels)) await loadRoll(roll);
           const rollFolder = `${safeName(roll.name || `Roll ${pad(roll.number)}`)}`;
           const rollDirectory = directory ? await directory.getDirectoryHandle(rollFolder, { create: true }) : null;
           for (const shot of roll.shots) {
@@ -155,6 +156,7 @@
               updateProgress(progressId, `Prepared ${completedPngs} of ${totalPngs} PNG(s)`, completed / totalFiles * 100);
             }
           }
+          if (roll !== activeRoll()) roll.shots.forEach((shot) => { shot.pixels = null; });
         }
         if (asZip) {
           for (const roll of rolls) {
